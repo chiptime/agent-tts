@@ -26,6 +26,7 @@ from typing import Callable, Dict, Optional
 
 from .config import MAX_SCREEN_LINES, Settings
 from .consult import ConsultService, intent_global, intent_history
+from .crew.aggregate import split_pane_id
 from .approval_lexicon import (
     CHOICE_BOOLEAN,
     CHOICE_OPTION,
@@ -372,6 +373,20 @@ def status_payload(
     }
 
 
+class CrewTargetRefused(Exception):
+    """A voice request aimed at a crew pane was refused EXPLICITLY (S1).
+
+    Panes on other hosts are a crew routing question (server.py
+    ``crew_remote_peer`` refuses unknown host prefixes with a 422 and
+    never falls back); the voice layer must obey the same rule. When the
+    explicitly named pane id is crew-shaped — a member-shaped
+    ``<host>:`` prefix — and names no real local pane, the tools refuse
+    with a precise message instead of the focused-pane fallback: an ask
+    about another machine must never silently read or write the local
+    focused pane.
+    """
+
+
 class BrainTools:
     """Tool implementations bound to a HerdrClient and settings."""
 
@@ -420,6 +435,11 @@ class BrainTools:
         # convention as the consult sink and the hook broker); absent →
         # the verbal tools record nothing and behave exactly as before.
         self._audit_log = None
+        # Crew pane routing (S1): the server binds the crew gateway's
+        # pane router after construction when this host IS in a crew;
+        # solo hosts and injected doubles keep None, which disables the
+        # crew rule entirely (zero-tax solo, S6).
+        self._crew_router = None
         # Held Claude hook permissions (parity-f7e S3): the broker the
         # server binds after construction; the ids already handed to the
         # model for speaking (the verbal binding answer_hold requires).
@@ -450,6 +470,18 @@ class BrainTools:
         records a tap; doubles without the seam keep the old behavior."""
         self._audit_log = audit_log
 
+    def attach_crew_router(self, router: Optional[Callable[[str], Optional[str]]]) -> None:
+        """Binds the crew pane router (S1) after construction.
+
+        Mirrors ``attach_call_context``/``attach_consult``: the server
+        builds tools at boot and attaches the crew gateway's pane router
+        when this host IS in a crew. The router maps ``<host>:<pane>``
+        ids to the enrolled peer's name (CrewGateway.route_pane) and
+        returns None for anything not routed. Solo hosts and injected
+        doubles keep None, which disables the crew rule entirely — zero
+        tax on solo (S6)."""
+        self._crew_router = router
+
     # -- tools --------------------------------------------------------------
 
     def active_status(self) -> Optional[AgentInfo]:
@@ -460,8 +492,29 @@ class BrainTools:
         """Pane a request operates on: the explicit pane_id, else the focused.
 
         An unknown pane_id falls back to the focused pane so a stale selection
-        never bricks the brain.
+        never bricks the brain. The ONE exception (S1, crew): a pane id with a
+        member-shaped ``<host>:`` prefix that names no real local pane is a
+        crew pane question — the tools refuse it EXPLICITLY instead of
+        steering the ask at the focused pane. That refusal covers every
+        downstream voice surface at once (gates freeze the resolved target,
+        the loop dispatches to it), so an ask about another machine can never
+        silently read or write a local pane.
+
+        The routing check runs BEFORE pane enumeration (S1): an id an
+        enrolled host owns is remote even when enumeration FAILS — a dead
+        mux must degrade the local path exactly like it always did (None),
+        never resurrect an explicit remote target as the focused local pane.
+        Solo builds keep the exact legacy fallback: no router attached means
+        no crew rule here.
         """
+        if pane_id and self._crew_router is not None:
+            routed = self._crew_router(pane_id)
+            if routed is not None:
+                raise CrewTargetRefused(
+                    f"El pane '{pane_id}' pertenece al peer '{routed}' del "
+                    "crew: la voz no actúa sobre panes remotos; nada se "
+                    "envió."
+                )
         try:
             agents = self._herdr.list_agents()
         except HerdrError:
@@ -470,6 +523,12 @@ class BrainTools:
             for agent in agents:
                 if agent.pane_id == pane_id:
                     return self._track(agent)
+            host, _rest = split_pane_id(pane_id)
+            if host is not None and self._crew_router is not None:
+                raise CrewTargetRefused(
+                    f"'{host}' no es un host del crew y '{pane_id}' no es un "
+                    "pane local: nada se envió."
+                )
         return self._track(pick_active(agents))
 
     def _resolve(self, target: Optional[AgentInfo]) -> Optional[AgentInfo]:

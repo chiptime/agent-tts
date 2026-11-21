@@ -478,6 +478,23 @@
       flex-direction: column;
       gap: 2px;
     }
+    /* Crew (T1/S1): the host chip names which machine a remote pane
+     * lives on; peer rows name a machine nobody can reach. */
+    .conv-row .cr-host {
+      align-self: flex-start;
+      font-size: 11px;
+      color: var(--accent);
+      border: 1px solid var(--accent);
+      border-radius: 8px;
+      padding: 0 6px;
+      width: fit-content;
+    }
+    .conv-peer {
+      padding: 10px 14px;
+      font-size: 13px;
+      color: var(--danger);
+      text-align: left;
+    }
     .cr-name {
       font-weight: 600;
       white-space: nowrap;

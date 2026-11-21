@@ -1048,9 +1048,10 @@
     diagStatus.textContent = t("diag.status", { when: when, error: diag.lastError || t(diag.errorKey) });
   }
 
-  function safeRender(name, fn, arg) {
+  function safeRender(name, fn) {
+    var args = Array.prototype.slice.call(arguments, 2);
     try {
-      fn(arg);
+      fn.apply(null, args);
     } catch (err) {
       markPollError(name, err);
     }
@@ -1854,7 +1855,7 @@
   /* ---------------- herd + selected agent ---------------- */
 
   function effectiveSelected(herd) {
-    if (selectedPane && herd.some(function (a) { return a.pane_id === selectedPane; })) {
+    if (selectedPane && herd.some(function (a) { return herdRowMatches(a, selectedPane); })) {
       return selectedPane;
     }
     var focused = null;
@@ -1862,10 +1863,11 @@
       if (herd[i].focused) { focused = herd[i]; break; }
     }
     var fallback = focused || herd[0];
-    return fallback ? fallback.pane_id : null;
+    return fallback ? paneRowId(fallback) : null;
   }
 
   var lastHerd = [];
+  var lastPeers = [];
   var lastPending = { detected: false };
   var lastPendingSignal = null;
   /* The most recent /view payload: the ONLY description of the pane whose
@@ -1935,9 +1937,30 @@
     return (agent && agent.agent_status) || "";
   }
 
+  /* A row's ADDRESS id: bare for a local pane, "<host>:<pane>" for a
+   * remote crew pane. Two hosts may share a bare pane id, and every
+   * crew-REST route on the server proxies the qualified form to the
+   * owning peer — so the address is what rows key on and what the
+   * selection stores (T1/S1). */
+  function paneRowId(agent) {
+    if (!agent) return null;
+    return agent.host ? agent.host + ":" + agent.pane_id : agent.pane_id;
+  }
+
+  /* Whether a herd row IS the pane an id names — host-aware (T1/S1):
+   * a bare id matches only a LOCAL row, a qualified "<host>:<pane>" id
+   * matches only its host-tagged row. Two hosts may share a bare pane
+   * id; matching across that boundary would let a remote pane stand in
+   * for a vanished local one (or the reverse) — identities never mix. */
+  function herdRowMatches(agent, id) {
+    if (!agent || id == null) return false;
+    if (agent.host) return paneRowId(agent) === id;
+    return agent.pane_id === id;
+  }
+
   function herdEntry(paneId) {
     for (var i = 0; i < lastHerd.length; i++) {
-      if (lastHerd[i].pane_id === paneId) return lastHerd[i];
+      if (herdRowMatches(lastHerd[i], paneId)) return lastHerd[i];
     }
     return null;
   }
@@ -1948,9 +1971,10 @@
    * headers are reused the same way, keyed by data-head, so the grouping
    * (2026-10-15: state, then "Últimos 30 min" inside each state) never
    * turns the poll into a full rebuild. */
-  function renderHerd(herd) {
+  function renderHerd(herd, peers) {
     if (!Array.isArray(herd)) herd = [];
     lastHerd = herd;
+    lastPeers = peers || [];
     var effective = effectiveSelected(herd);
     lastEffectivePane = effective;
     refreshOperatorDock();
@@ -1988,7 +2012,10 @@
     var pickerSub = "";
     for (i = 0; i < herd.length; i++) {
       var agent = herd[i];
-      var id = agent.pane_id;
+      /* Remote crew panes key on their QUALIFIED address so two hosts
+       * sharing a bare id stay two rows; the click reuses the ordinary
+       * selection flow — the REST crew routes proxy it to the owner. */
+      var id = paneRowId(agent);
       seen[id] = true;
       var name = agentDisplayName(agent);
       var title = (agent.title || "") + (agent.agent_error
@@ -2014,6 +2041,9 @@
         var subEl = document.createElement("span");
         subEl.className = "cr-sub";
         mainEl.appendChild(subEl);
+        var hostEl = document.createElement("span");
+        hostEl.className = "cr-host hidden";
+        mainEl.appendChild(hostEl);
         var statusEl = document.createElement("span");
         statusEl.className = "cr-status";
         el.appendChild(statusEl);
@@ -2042,11 +2072,15 @@
       var subText = agent.agent_error
         ? "⚠ " + (agent.agent_error.message || agent.agent_error.name)
         : agentWorkspaceSub(agent);
+      var hostText = agent.host || "";
+      var hostNode = subNode.nextSibling;  // the .cr-host chip (always built)
       var pillCls = "cr-status" + (statusText ? " " + status : "");
       if (dotNode.className !== dotCls) dotNode.className = dotCls;
       if (nameNode.textContent !== name) nameNode.textContent = name;
       if (subNode.textContent !== subText) subNode.textContent = subText;
       subNode.classList.toggle("hidden", !subText);
+      if (hostNode.textContent !== hostText) hostNode.textContent = hostText;
+      hostNode.classList.toggle("hidden", !hostText);
       if (statusNode.className !== pillCls) statusNode.className = pillCls;
       if (statusNode.textContent !== statusText) statusNode.textContent = statusText;
       statusNode.classList.toggle("hidden", !statusText);
@@ -2088,7 +2122,7 @@
             ));
           }
           for (var k = 0; k < subs[j].rows.length; k++) {
-            var subRow = rowById[subs[j].rows[k].pane_id];
+            var subRow = rowById[paneRowId(subs[j].rows[k])];
             if (subRow) ordered.push(subRow);
           }
         }
@@ -2097,7 +2131,19 @@
       /* Degraded path: a herd-group.js that did not load must never empty
        * the switcher, so fall back to the flat list this sheet always was. */
       for (i = 0; i < herd.length; i++) {
-        if (rowById[herd[i].pane_id]) ordered.push(rowById[herd[i].pane_id]);
+        if (rowById[paneRowId(herd[i])]) ordered.push(rowById[paneRowId(herd[i])]);
+      }
+    }
+    /* Unreachable crew peers land AFTER every pane: an informational
+     * header row naming the machine, never a silent absence and never a
+     * phantom selectable pane (T1/S1). Reachable peers are already
+     * visible through their panes' host chips, so no extra row for them. */
+    for (i = 0; i < lastPeers.length; i++) {
+      if (lastPeers[i] && lastPeers[i].state === "unreachable") {
+        ordered.push(headNode(
+          "peer:" + lastPeers[i].name, "conv-peer",
+          lastPeers[i].name + " \u00b7 " + t("herd.peer_unreachable")
+        ));
       }
     }
 
@@ -2134,7 +2180,7 @@
     publishPaneSelection(paneId);
     /* Restyle chips NOW (no fetch): selection feedback must not wait for
      * the next 5s /herd poll. */
-    safeRender("herd-restyle", renderHerd, lastHerd);
+    safeRender("herd-restyle", renderHerd, lastHerd, lastPeers);
     glanceNeedsWipe = true;  // another agent's turns: full keyed-cache reset
     readerSync(paneId, null);  // reader snapshot from the old pane is stale
     lastScreenText = null;
@@ -4391,7 +4437,7 @@
     var paneId = lastEffectivePane || selectedPane;
     var name = "";
     for (var i = 0; i < lastHerd.length; i++) {
-      if (lastHerd[i].pane_id === paneId) {
+      if (herdRowMatches(lastHerd[i], paneId)) {
         name = agentDisplayName(lastHerd[i]);
         break;
       }
@@ -4564,7 +4610,17 @@
         if (!resp.ok) throw new Error("HTTP " + resp.status);
         return resp.json();
       })
-      .then(function (herd) { safeRender("herd", renderHerd, herd); })
+      .then(function (herd) {
+        /* Crew contract (T1/S1): a crewed lead answers {panes, peers};
+         * solo answers the plain list. Unwrap the object so the renderer
+         * keeps its array contract — remote panes and unreachable peers
+         * must be visible, never swallowed as "not an array". */
+        if (herd && !Array.isArray(herd) && Array.isArray(herd.panes)) {
+          safeRender("herd", renderHerd, herd.panes, herd.peers || []);
+          return;
+        }
+        safeRender("herd", renderHerd, herd);
+      })
       .catch(function (err) {
         markPollError("herd", err);
       });
@@ -9552,7 +9608,7 @@
       renderPending(lastView);
       renderPill();
       paintStopIdle();
-      renderHerd(lastHerd);
+      renderHerd(lastHerd, lastPeers);
       refreshState();
     });
   }
@@ -9688,7 +9744,7 @@
     var pane = lastEffectivePane;
     var family = null;
     for (var i = 0; i < lastHerd.length; i++) {
-      if (lastHerd[i].pane_id === pane) { family = lastHerd[i].agent || null; break; }
+      if (herdRowMatches(lastHerd[i], pane)) { family = lastHerd[i].agent || null; break; }
     }
     var key = (family || "?") + "|" + (pane || "?");
     if (key === lastDockKey) return;

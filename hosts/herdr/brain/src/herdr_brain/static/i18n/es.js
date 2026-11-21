@@ -201,6 +201,7 @@
 
     /* ---- herd / conversation sheet ---- */
     "herd.disappeared": "El agente seleccionado desapareció — volviendo al enfocado.",
+    "herd.peer_unreachable": "sin conexión",
     "herd.recent": "Últimos 30 min",
     "herd.g_blocked": "Bloqueado",
     "herd.g_error": "Con error",
