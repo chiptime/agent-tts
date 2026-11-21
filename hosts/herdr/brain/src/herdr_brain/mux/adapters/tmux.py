@@ -7,11 +7,17 @@ than approximated — a guessed agent name would select the wrong grammar
 and the wrong journal downstream.
 
 Reads ride ``capture-pane`` (styled with ``-e``, history with
-``-S -<n>``); writes ride ``send-keys`` with text passed as ONE argv
-element behind ``-l``, so no shell ever sits between the brain and the
-pane and metacharacters stay literal. Prompt submission is verified by
-re-reading the pane with ``capture-pane`` BEFORE and immediately AFTER
-the send and classifying with the SAME receipt rules herdr rides
+``-S -<n>``); writes deliver text through a PRIVATE paste buffer — the
+exact bytes travel by stdin (``load-buffer <name> -``), are pasted
+byte-exact into the target pane (``paste-buffer -d -S``) and the buffer
+is deleted, with ``send-keys`` reduced to the ``Enter`` key. No shell
+ever sits between the brain and the pane, and the text never rides argv:
+tmux 3.8 drops a trailing ``;`` from ``send-keys -l`` while still
+exiting 0 (live probe in ``tests/test_mux_tmux_live.py``), so argv is
+treated as a surface tmux may alter, and stdin as the one it cannot.
+Prompt submission is verified by re-reading the pane with
+``capture-pane`` BEFORE and immediately AFTER the send and classifying
+with the SAME receipt rules herdr rides
 (:func:`herdr_brain.send_receipts.classify_send`). tmux vouches the
 WRITE only (``send-keys`` exited 0), never completion, so the claim
 handed to the classifier stays neutral: the screens decide ``sent`` /
@@ -22,6 +28,7 @@ completion) is never claimed — tmux exposes no agent-turn state.
 from __future__ import annotations
 
 import subprocess
+import uuid
 from typing import Callable, List, Optional
 
 from ...config import MAX_BACKLOG_LINES, MAX_SCREEN_LINES
@@ -49,9 +56,11 @@ _EVIDENCE = {
     "pane_grid": "list-panes -a -F grid pinned by tests/fixtures/mux/tmux/list-panes.txt",
     "ansi_screen": "capture-pane -p [-e] pinned by tests/fixtures/mux/tmux/capture-visible.*",
     "scrollback": "capture-pane -S -<n> history capture (tests/fixtures/mux/tmux/capture-recent.txt)",
-    "prompt_submit": "send-keys -l text + Enter verified by capture-pane re-reads (tests/test_mux_tmux.py)",
+    "prompt_submit": "load-buffer -> paste-buffer -d -S -> send-keys Enter "
+                     "verified by capture-pane re-reads (tests/test_mux_tmux.py, "
+                     "tests/test_mux_tmux_live.py)",
     "keys": "send-keys argv translated from the neutral orthography (tests/test_mux_tmux.py)",
-    "tabs": "new-window -P -F '#{window_id} #{pane_id}' (tests/fixtures/mux/tmux/new-window.txt)",
+    "tabs": "new-window -d -P -F '#{window_id} #{pane_id}' (tests/fixtures/mux/tmux/new-window.txt, tests/test_mux_tmux_live.py)",
 }
 
 
@@ -138,10 +147,22 @@ class TmuxAdapter:
 
     # -- internals -----------------------------------------------------------
 
-    def _run_cli(self, args: List[str], capability: str, timeout_s: float = 15.0):
+    def _run_cli(
+        self,
+        args: List[str],
+        capability: str,
+        timeout_s: float = 15.0,
+        input_text: Optional[str] = None,
+    ):
         cmd = [self._bin_path, *args]
         try:
-            proc = self._run(cmd, capture_output=True, text=True, timeout=timeout_s)
+            proc = self._run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout_s,
+                input=input_text,
+            )
         except subprocess.TimeoutExpired as exc:
             raise MuxRefusal(
                 "unreachable", capability,
@@ -159,10 +180,60 @@ class TmuxAdapter:
             )
         return proc
 
+    #: Private-buffer prefix: never a tmux default buffer (``0``..``9``)
+    #: and never a foreign named buffer; the uuid suffix makes concurrent
+    #: sends in one server collision-free.
+    PASTE_BUFFER_PREFIX = "herdr-paste-"
+
     def _submit_line(self, pane_id: str, text: str, capability: str) -> None:
-        """Types one literal line, then presses Enter (two argv-only calls)."""
-        self._run_cli(["send-keys", "-t", pane_id, "-l", text], capability)
-        self._run_cli(["send-keys", "-t", pane_id, "Enter"], capability)
+        """Delivers one literal line via a private paste buffer, then Enter.
+
+        Finding C (live, tmux 3.8 isolated probe): ``send-keys -l``
+        silently dropped a trailing ``;`` while still exiting 0, and the
+        receipt even read ``sent`` on the altered write. The exact bytes
+        therefore never ride argv — argv is a surface tmux 3.8 can alter;
+        stdin is not.         ``load-buffer`` pulls the text from stdin into a PRIVATE uniquely
+        named buffer (never a default ``0``..``9`` buffer, never a foreign
+        name), ``paste-buffer -d -S`` inserts it byte-exact into the
+        TARGET pane by id (``-S`` keeps tmux from vis-escaping control
+        characters, matching the raw bytes ``send-keys -l`` used to
+        deliver) and ``-d`` deletes the buffer in the same operation, and
+        the submit rides the SAME client invocation as tmux's ``;``
+        separator — the payload text only ever rides stdin, and one
+        invocation narrows the window in which another client's command
+        could run between the paste and the Enter. A best-effort
+        ``delete-buffer`` runs on EVERY path; honestly, if that delete
+        itself fails, the payload survives under this private uuid name
+        until the server exits — never under a default or foreign name.
+        Only buffers this operation created are ever touched.
+        """
+        buffer_name = f"{self.PASTE_BUFFER_PREFIX}{uuid.uuid4().hex}"
+        try:
+            self._run_cli(
+                ["load-buffer", "-b", buffer_name, "-"], capability,
+                input_text=text,
+            )
+            self._run_cli(
+                ["paste-buffer", "-d", "-S", "-b", buffer_name, "-t", pane_id,
+                 ";", "send-keys", "-t", pane_id, "Enter"],
+                capability,
+            )
+        finally:
+            self._delete_paste_buffer(buffer_name, capability)
+
+    def _delete_paste_buffer(self, buffer_name: str, capability: str) -> None:
+        """Best-effort delete of a buffer THIS call created; never raises.
+
+        A paste that already succeeded deleted its buffer via ``-d``; the
+        delete then fails harmlessly for the same uuid name. If the
+        delete itself fails, the payload may persist under this private
+        uuid-named buffer until the server exits — never under a tmux
+        default (``0``..``9``) or a foreign actor's named buffer.
+        """
+        try:
+            self._run_cli(["delete-buffer", "-b", buffer_name], capability)
+        except HerdrError:
+            pass
 
     def _verified_read(self, pane_id: str) -> Optional[str]:
         """One FULL plain-text grid read; None on failure (evidence, not truth).
@@ -312,8 +383,13 @@ class TmuxAdapter:
         )
 
     def create_tab(self, label: str, cwd: Optional[str] = None) -> dict:
+        # Finding (live, tmux 3.8 isolated probe): ``new-window`` without
+        # ``-d`` made the new window the session's current one — visible
+        # focus theft from whoever is attached. ``-d`` creates the window
+        # WITHOUT switching; id printing stays unchanged.
         args = [
-            "new-window", "-P", "-F", "#{window_id} #{pane_id}", "-n", label,
+            "new-window", "-d", "-P", "-F", "#{window_id} #{pane_id}",
+            "-n", label,
         ]
         if cwd:
             args.extend(["-c", cwd])
