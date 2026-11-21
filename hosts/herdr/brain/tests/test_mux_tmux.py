@@ -200,22 +200,205 @@ class TestPaneRun:
 
 
 class TestSendPrompt:
-    def test_submits_sanitized_line_and_reports_unknown(self):
+    """f7f S2: the fire-and-forget submit gains its verified read-back.
+
+    capture-pane is read BEFORE and immediately AFTER the submission
+    (plain text — the receipt classifier matches echo tails on unstyled
+    lines, so ``-e`` would corrupt the match), and the SAME classifier
+    herdr rides decides the outcome. tmux vouches the WRITE only, so the
+    claim handed to the classifier is neutral: a moved body is ``sent``,
+    a surviving echo ``typed_not_submitted``, an unreadable screen
+    ``unknown`` — and ``effective`` (turn completion) is never claimed
+    because tmux exposes no agent state.
+    """
+
+    def test_body_movement_receipts_sent(self):
         runner = RecordedRunner(
+            (("capture-pane",), 0, fixture("tmux/capture-visible.txt"), ""),
             (("send-keys", "-t", "%3", "-l"), 0, "", ""),
             (("send-keys",), 0, "", ""),
+            (("capture-pane",), 0, fixture("tmux/prompt-after-sent.txt"), ""),
         )
-        result = adapter(runner).send_prompt("%3", "línea uno\nlínea dos")
-        assert result == {"ok": True, "status": "unknown", "output": ""}
-        assert runner.calls[0]["cmd"][-1] == "línea uno línea dos"
-        assert runner.calls[1]["cmd"] == ["tmux-test", "send-keys", "-t", "%3", "Enter"]
-        assert len(runner.calls) == 2  # fire-and-forget: no completion wait
+        result = adapter(runner).send_prompt("%3", "run the probes")
+        # classify_send's own detail, verbatim: the same classifier, not
+        # a second one.
+        assert result == {
+            "ok": True,
+            "status": "sent",
+            "output": "enviado; la pantalla del agente avanzó",
+        }
+        # The body moved and the echo is gone: the poll stops after one
+        # re-read (immediate evidence, no completion wait).
+        assert len(runner.calls) == 4
+
+    def test_surviving_echo_receipts_typed_not_submitted(self):
+        runner = RecordedRunner(
+            (("capture-pane",), 0, fixture("tmux/capture-visible.txt"), ""),
+            (("send-keys", "-t", "%3", "-l"), 0, "", ""),
+            (("send-keys",), 0, "", ""),
+            (("capture-pane",), 0, fixture("tmux/prompt-after-typed.txt"), ""),
+            (("capture-pane",), 0, fixture("tmux/prompt-after-typed.txt"), ""),
+        )
+        result = adapter(runner).send_prompt("%3", "run the probes")
+        assert result == {
+            "ok": False,
+            "status": "typed_not_submitted",
+            "output": "el texto quedó escrito en la línea de entrada sin enviarse",
+        }
+
+    def test_unreadable_screen_receipts_unknown_with_detail(self):
+        # A pane that cannot be read (here: the pane vanishes between
+        # listing and send) must stay honest: `unknown` with a detail,
+        # never a fabricated positive.
+        runner = RecordedRunner(
+            (("capture-pane",), 1, "", "can't find pane: %3"),
+            (("send-keys", "-t", "%3", "-l"), 0, "", ""),
+            (("send-keys",), 0, "", ""),
+            (("capture-pane",), 1, "", "can't find pane: %3"),
+            (("capture-pane",), 1, "", "can't find pane: %3"),
+        )
+        result = adapter(runner).send_prompt("%3", "run the probes")
+        assert result == {
+            "ok": False,
+            "status": "unknown",
+            "output": "no se pudo leer la pantalla del agente",
+        }
+
+    def test_a_finished_looking_pane_never_claims_effective(self):
+        # The after screen shows a completed round-trip ("probes ok: 3
+        # passed" plus a fresh prompt), but tmux exposes no agent-turn
+        # state: the receipt is `sent`, never `effective`.
+        runner = RecordedRunner(
+            (("capture-pane",), 0, fixture("tmux/capture-visible.txt"), ""),
+            (("send-keys", "-t", "%3", "-l"), 0, "", ""),
+            (("send-keys",), 0, "", ""),
+            (("capture-pane",), 0, fixture("tmux/prompt-after-sent.txt"), ""),
+        )
+        result = adapter(runner).send_prompt("%3", "run the probes")
+        assert result["status"] in ("sent", "typed_not_submitted", "unknown")
+        assert result["status"] == "sent"
+
+    def test_pins_the_exact_command_sequence_with_plain_reads(self):
+        runner = RecordedRunner(
+            (("capture-pane",), 0, fixture("tmux/capture-visible.txt"), ""),
+            (("send-keys", "-t", "%3", "-l"), 0, "", ""),
+            (("send-keys",), 0, "", ""),
+            (("capture-pane",), 0, fixture("tmux/prompt-after-sent.txt"), ""),
+        )
+        adapter(runner).send_prompt("%3", "run the probes")
+        assert [call["cmd"] for call in runner.calls] == [
+            # Plain capture (no -e): classification reads unstyled lines.
+            ["tmux-test", "capture-pane", "-p", "-t", "%3"],
+            ["tmux-test", "send-keys", "-t", "%3", "-l", "run the probes"],
+            ["tmux-test", "send-keys", "-t", "%3", "Enter"],
+            ["tmux-test", "capture-pane", "-p", "-t", "%3"],
+        ]
+
+    def test_multiline_text_is_sanitized_before_the_write(self):
+        runner = RecordedRunner(
+            (("capture-pane",), 0, fixture("tmux/capture-visible.txt"), ""),
+            (("send-keys", "-t", "%3", "-l"), 0, "", ""),
+            (("send-keys",), 0, "", ""),
+            (("capture-pane",), 0, fixture("tmux/prompt-after-sent.txt"), ""),
+        )
+        adapter(runner).send_prompt("%3", "línea uno\nlínea dos")
+        # A literal newline is a real Enter in the pane: sanitized to
+        # ONE line before it reaches send-keys.
+        assert runner.calls[1]["cmd"][-1] == "línea uno línea dos"
+
+    def test_quote_breaker_payload_stays_one_literal_argv_element(self):
+        payload = "rm -rf '$(whoami)' \"keep\" `id`"
+        runner = RecordedRunner(
+            (("capture-pane",), 0, fixture("tmux/capture-visible.txt"), ""),
+            (("send-keys", "-t", "%3", "-l"), 0, "", ""),
+            (("send-keys",), 0, "", ""),
+            (("capture-pane",), 0, fixture("tmux/prompt-after-typed.txt"), ""),
+            (("capture-pane",), 0, fixture("tmux/prompt-after-typed.txt"), ""),
+        )
+        adapter(runner).send_prompt("%3", payload)
+        write = runner.calls[1]["cmd"]
+        # ONE argv element behind -l: no shell sits between the brain
+        # and tmux, so quotes, $() and backticks stay literal text.
+        assert write == ["tmux-test", "send-keys", "-t", "%3", "-l", payload]
 
     def test_empty_prompt_refused_without_invoking(self):
         runner = RecordedRunner()
         with pytest.raises(HerdrError, match="empty"):
             adapter(runner).send_prompt("%3", "  ")
         assert runner.calls == []
+
+    def test_a_pane_taller_than_the_screen_budget_still_classifies(self):
+        # Finding B (live, tmux 3.8 scratch server): a fresh pane taller
+        # than the display budget holds its prompt rows at the TOP with
+        # blank rows below, so the budgeted TAIL read saw only blanks
+        # and classified an honest-but-wrong `unknown`. The
+        # classification path reads the FULL grid; read_screen's public
+        # tail semantics stay the display budget.
+        runner = RecordedRunner(
+            (("capture-pane",), 0, fixture("tmux/capture-tall-before.txt"), ""),
+            (("send-keys", "-t", "%3", "-l"), 0, "", ""),
+            (("send-keys",), 0, "", ""),
+            (("capture-pane",), 0, fixture("tmux/capture-tall-after-sent.txt"), ""),
+        )
+        result = adapter(runner, screen_lines=4).send_prompt("%3", "run the probes")
+        assert result["status"] == "sent"
+        assert result["ok"] is True
+
+
+class TestProbe:
+    """Finding A (live, tmux 3.8 scratch server): ``-V`` answers with NO
+    server — a wrapper pointed at a nonexistent socket still prints the
+    version. A probe must add reachability facts: the SERVER roundtrip
+    (``list-sessions``, the cheapest command that needs the server)
+    decides ``reachable``; ``-V`` stays the version source only, and an
+    unreachable probe may still carry the version."""
+
+    def test_version_without_a_server_is_not_reachable(self):
+        runner = RecordedRunner(
+            (("-V",), 0, "tmux 3.8\n", ""),
+            (("list-sessions",), 1, "",
+             "error connecting to /tmp/tmux-1000/no-such (No such file or directory)"),
+        )
+        probe = adapter(runner).probe()
+        assert probe.reachable is False
+        assert "error connecting" in probe.detail
+        # The client still names its version: -V is the version source.
+        assert probe.version == "3.8"
+
+    def test_reachable_when_the_server_answers_list_sessions(self):
+        runner = RecordedRunner(
+            (("-V",), 0, "tmux 3.8\n", ""),
+            (("list-sessions",), 0,
+             "scratch: 1 windows (created Tue Nov 18 10:00:00 2026)\n", ""),
+        )
+        probe = adapter(runner).probe()
+        assert probe.reachable is True
+        assert probe.version == "3.8"
+        assert "list-sessions" in probe.detail
+        assert runner.calls[0]["cmd"] == ["tmux-test", "-V"]
+        assert runner.calls[1]["cmd"] == ["tmux-test", "list-sessions"]
+
+    def test_no_server_running_stderr_is_also_unreachable(self):
+        # The other no-server shape: the socket exists but no server is
+        # listening on it.
+        runner = RecordedRunner(
+            (("-V",), 0, "tmux 3.8\n", ""),
+            (("list-sessions",), 1, "",
+             "no server running on /tmp/tmux-1000/default"),
+        )
+        probe = adapter(runner).probe()
+        assert probe.reachable is False
+
+    def test_missing_binary_is_not_reachable(self):
+        runner = RecordedRunner(FileNotFoundError("tmux-test"))
+        probe = adapter(runner).probe()
+        assert probe.reachable is False
+        assert "tmux-test" in probe.detail
+
+    def test_nonzero_version_exit_is_not_reachable(self):
+        runner = RecordedRunner((("-V",), 1, "", "boom"))
+        probe = adapter(runner).probe()
+        assert probe.reachable is False
 
 
 class TestCreateTab:

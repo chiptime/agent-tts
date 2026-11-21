@@ -94,6 +94,10 @@ class SessionTools:
         self.resume_result = (
             "Panel reanudado: tab=t-1 pane=w3:p1 claude sesión abc en /repo."
         )
+        # f7f S4: the focus seam mirrors BrainTools.focus_workspace's
+        # outcome dict (focused | unsupported | error).
+        self.focus_calls: list[str] = []
+        self.focus_result = {"outcome": "focused", "detail": ""}
         # S2 concurrency probe: keep create_session in flight long enough
         # for two overlapping requests to actually overlap.
         self.slow_s = 0.0
@@ -106,6 +110,10 @@ class SessionTools:
 
     def list_workspaces(self):
         return list(self.workspaces)
+
+    def focus_workspace(self, workspace_id):
+        self.focus_calls.append(workspace_id)
+        return dict(self.focus_result)
 
     def create_session(self, agent_kind, title, task="", cwd="", workspace_id=None):
         row = {
@@ -1677,3 +1685,128 @@ class TestSessionResumeWorkspace:
             "harness": "claude", "session_id": "abc", "cwd": str(root),
             "title": "T",
         }]
+
+
+# ── POST /workspace/focus — the PWA space switch (f7f S4, audit 03 §5) ─
+
+SPACES_FOCUS = [
+    WorkspaceInfo("w1", "Main", 1, True),
+    WorkspaceInfo("w2", "Lab", 2, False),
+]
+
+
+class TestWorkspaceFocusRoute:
+    def test_focus_route_is_a_classified_write(self):
+        # The f7c L10 precedent: a write route without its access rule
+        # would bypass the CSRF/Host gates — classify pins the rule.
+        assert access.classify("POST", "/workspace/focus") == "write"
+
+    def test_unknown_workspace_is_refused_and_audited(
+        self, tmp_path, monkeypatch
+    ):
+        client, tools = make_client(
+            tmp_path, monkeypatch, workspaces=SPACES_FOCUS
+        )
+        resp = client.post("/workspace/focus", json={"workspace_id": "w404"})
+        assert resp.status_code == 422
+        assert resp.json() == {"detail": "unknown_workspace"}
+        assert tools.focus_calls == []
+        lines = [l for l in audit_lines(tmp_path) if l["action"] == "workspace.focus"]
+        assert len(lines) == 1
+        assert lines[0]["detail"] == {
+            "outcome": "unknown_workspace", "workspace_id": "w404",
+        }
+
+    def test_empty_workspace_id_is_refused(self, tmp_path, monkeypatch):
+        client, tools = make_client(
+            tmp_path, monkeypatch, workspaces=SPACES_FOCUS
+        )
+        resp = client.post("/workspace/focus", json={"workspace_id": "  "})
+        assert resp.status_code == 422
+        assert resp.json() == {"detail": "unknown_workspace"}
+        assert tools.focus_calls == []
+
+    def test_happy_path_focuses_and_audits_with_device(
+        self, tmp_path, monkeypatch
+    ):
+        client, tools = make_client(
+            tmp_path, monkeypatch, workspaces=SPACES_FOCUS
+        )
+        token = pair_device(client, tmp_path / "state")
+        resp = client.post(
+            "/workspace/focus", json={"workspace_id": "w2"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "workspace_id": "w2"}
+        assert tools.focus_calls == ["w2"]
+        lines = [l for l in audit_lines(tmp_path) if l["action"] == "workspace.focus"]
+        assert len(lines) == 1
+        line = lines[0]
+        assert line["device"] == "phone"
+        assert line["detail"] == {"outcome": "focused", "workspace_id": "w2"}
+
+    def test_unsupported_mux_refuses_422(self, tmp_path, monkeypatch):
+        tools = SessionTools(workspaces=SPACES_FOCUS)
+        tools.focus_result = {
+            "outcome": "unsupported", "detail": "workspaces are herdr-only",
+        }
+        client, _ = make_client(tmp_path, monkeypatch, tools=tools)
+        resp = client.post("/workspace/focus", json={"workspace_id": "w1"})
+        assert resp.status_code == 422
+        assert resp.json() == {"detail": "workspaces_unsupported"}
+        lines = [l for l in audit_lines(tmp_path) if l["action"] == "workspace.focus"]
+        assert lines[0]["detail"]["outcome"] == "unsupported"
+
+    def test_error_outcome_is_a_502(self, tmp_path, monkeypatch):
+        tools = SessionTools(workspaces=SPACES_FOCUS)
+        tools.focus_result = {"outcome": "error", "detail": "cli down"}
+        client, _ = make_client(tmp_path, monkeypatch, tools=tools)
+        resp = client.post("/workspace/focus", json={"workspace_id": "w1"})
+        assert resp.status_code == 502
+        assert resp.json()["detail"] == "cli down"
+        lines = [l for l in audit_lines(tmp_path) if l["action"] == "workspace.focus"]
+        assert lines[0]["detail"]["outcome"] == "error"
+
+    def test_the_focus_surface_is_not_a_llm_tool(self):
+        names = {tool["function"]["name"] for tool in TOOLS_SCHEMA}
+        assert "focus_workspace" not in names
+        assert "workspace_focus" not in names
+
+
+class TestSessionRootsMuxSummary:
+    """The additive ``mux`` field (f7f S4): which multiplexer serves
+    this brain, so the sheet's Espacios section can explain what the
+    declared capabilities do not carry."""
+
+    def test_default_payload_carries_the_herdr_summary(
+        self, tmp_path, monkeypatch
+    ):
+        client, _ = make_client(tmp_path, monkeypatch)
+        body = client.get("/session/roots").json()
+        assert body["mux"] == {"name": "herdr", "children": ["herdr"]}
+
+    def test_a_composite_mux_names_its_children_in_config_order(
+        self, tmp_path, monkeypatch
+    ):
+        class CompositeLike:
+            names = ("herdr", "tmux", "zellij")
+
+        tools = SessionTools()
+        tools._herdr = CompositeLike()
+        client, _ = make_client(tmp_path, monkeypatch, tools=tools)
+        body = client.get("/session/roots").json()
+        assert body["mux"] == {
+            "name": "composite", "children": ["herdr", "tmux", "zellij"],
+        }
+
+    def test_a_single_alternate_names_itself(self, tmp_path, monkeypatch):
+        from herdr_brain.mux import TmuxAdapter, ZellijAdapter
+
+        for adapter, name in ((TmuxAdapter(), "tmux"), (ZellijAdapter(), "zellij")):
+            tools = SessionTools()
+            tools._herdr = adapter
+            client, _ = make_client(tmp_path, monkeypatch, tools=tools)
+            assert client.get("/session/roots").json()["mux"] == {
+                "name": name, "children": [name],
+            }

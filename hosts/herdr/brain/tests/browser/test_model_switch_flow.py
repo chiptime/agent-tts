@@ -120,6 +120,14 @@ def _load(karaoke_app):
     harness.respond("/herd", OPENCODE_HERD)
     harness.respond("/view", IDLE_VIEW, query=("pane_id",))
     harness.respond("/pane/reply", {"ok": True}, method="POST")
+    # f7f S4: opening the conversation sheet (#pane-picker) fetches
+    # /session/roots for the "Espacios" section. An empty herdr-backed
+    # payload declares the traffic without touching any assertion
+    # below (the section renders "Sin espacios").
+    harness.respond("/session/roots", {
+        "roots": [], "recents": [], "spaces": [], "harnesses": [],
+        "mux": {"name": "herdr", "children": ["herdr"]},
+    })
     # The full-catalog read the opencode card makes on demand: an EMPTY
     # catalog (the CLI is unavailable) keeps the picker's own options,
     # which is what every screen-option test below exercises.

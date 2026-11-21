@@ -51,6 +51,14 @@ def load(karaoke_app):
     harness.respond("/view", blocked_view(A), query=("pane_id",))
     # A blocked opencode pane makes the PWA ask for its pending dialog.
     harness.respond("/pane/permission", {"pending": None}, query=("pane_id",))
+    # f7f S4: the sheet the pane rows live in fetches /session/roots on
+    # open — declared with an empty herdr-backed payload so the
+    # fail-closed harness sees no undeclared traffic (assertions below
+    # only touch the pane rows, never the spaces section).
+    harness.respond("/session/roots", {
+        "roots": [], "recents": [], "spaces": [], "harnesses": [],
+        "mux": {"name": "herdr", "children": ["herdr"]},
+    })
     harness.load()
     expect(harness.page.locator("#pane-keys")).to_be_visible()
     expect(harness.page.locator("#view-screen")).to_have_text("PERMISSION FOR " + A)

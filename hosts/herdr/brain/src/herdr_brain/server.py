@@ -65,7 +65,7 @@ from .history_view import HISTORY_DEFAULT_LIMIT, clamp_limit
 from .llm import STOP_AGENT, BrainLLM, BrainLLMError, TurnCancelled
 from .launch_receipts import LaunchReceiptStore
 from .memory import DEFAULT_SESSION, MAX_MESSAGES, ConversationStore
-from .mux import create_mux
+from .mux import TmuxAdapter, ZellijAdapter, create_mux
 from .operator_config import (
     LaunchRefusedError,
     OperatorConfig,
@@ -876,6 +876,18 @@ class SessionResumeRequest(BaseModel):
     workspace_id: Optional[str] = Field(default=None, max_length=128)
 
 
+class WorkspaceFocusRequest(BaseModel):
+    """PWA space switch (f7f S4, audit 03 §5): the client names ONE
+    herdr workspace — nothing else. The id must be one the live
+    listing named (the launch-gate discipline of /session/new: a
+    workspace the server cannot vouch for targets nothing), and the
+    focus itself rides the SAME degraded mux seam list_workspaces
+    uses, so a multiplexer with no herdr child answers an honest
+    refusal instead of an error."""
+
+    workspace_id: str = Field(min_length=1, max_length=128)
+
+
 #: Live-pane cwds the "New" sheet's folder picker offers, at most.
 SESSION_ROOTS_RECENTS_CAP = 8
 
@@ -1072,6 +1084,30 @@ def _workspace_spaces(workspaces, panes, herd_entries, roots) -> list:
             "focused": workspace.focused,
         })
     return spaces
+
+
+def _mux_summary(tools) -> dict:
+    """Which multiplexer serves this brain: ``{name, children}`` (f7f S4).
+
+    Additive payload field for the sheet's Espacios section — derived
+    structurally from the adapter the tools hold, never from a second
+    config read: a composite names its children in config order, the
+    herdr adapter (and any client double behind it — the
+    :func:`_listed_panes` precedent) is herdr, the alternates identify
+    by class. Unknown doubles degrade to the herdr default so an
+    injected test seam never fabricates a composite.
+    """
+    mux = getattr(tools, "_herdr", None)
+    names = getattr(mux, "names", None)  # CompositeMux publishes config order
+    if names is not None:
+        return {"name": "composite", "children": list(names)}
+    if hasattr(mux, "list_workspaces"):
+        return {"name": "herdr", "children": ["herdr"]}
+    if isinstance(mux, TmuxAdapter):
+        return {"name": "tmux", "children": ["tmux"]}
+    if isinstance(mux, ZellijAdapter):
+        return {"name": "zellij", "children": ["zellij"]}
+    return {"name": "herdr", "children": ["herdr"]}
 
 
 def _known_workspace(tools, workspace_id: str) -> bool:
@@ -4199,7 +4235,10 @@ def create_app(
         list is the CLOSED registry list, folded here so the sheet
         opens with a single round-trip. Unconfigured roots or a failed
         workspace listing degrade honestly to empty lists — the WRITE
-        route is the one that fails closed."""
+        route is the one that fails closed. ``mux`` (f7f S4, additive)
+        names the active multiplexer and its children so the
+        conversation sheet's Espacios section can explain what the
+        declared capabilities do not carry."""
         roots = operator_config.roots()
         herd = tools.herd()
         workspaces = tools.list_workspaces()
@@ -4211,6 +4250,7 @@ def create_app(
             "spaces": spaces,
             "recents": recents,
             "harnesses": list(launchable_harnesses()),
+            "mux": _mux_summary(tools),
         }
 
     @app.post("/session/new")
@@ -4412,6 +4452,52 @@ def create_app(
         if request_id is None:
             return do_resume()
         return launch_receipts.launch_once(request_id, do_resume)
+
+    @app.post("/workspace/focus")
+    def workspace_focus(request: Request, body: WorkspaceFocusRequest) -> dict:
+        """Focuses one herdr workspace from the PWA (f7f S4, doc 03 §5).
+
+        The client names exactly one workspace the live listing must
+        have shown (unknown ⇒ 422 ``unknown_workspace``, the same
+        fail-closed discipline as /session/new's workspace targeting —
+        a workspace the server cannot vouch for targets nothing). The
+        focus rides ``BrainTools.focus_workspace`` — the same degraded
+        mux seam ``list_workspaces`` rides — so a multiplexer with no
+        herdr child answers 422 ``workspaces_unsupported`` (the PWA
+        explains this from the declared capabilities BEFORE posting;
+        this is the backstop) and a CLI failure answers 502 with the
+        detail. Every attempt is audited as ``workspace.focus`` with
+        device attribution, the outcome and the workspace id — ids
+        never content. PWA-only: the voice tools keep their own gated
+        surface; nothing here joins ``TOOLS_SCHEMA``.
+        """
+        def refuse(reason: str) -> None:
+            audit_log.record({
+                "action": "workspace.focus",
+                "device": audit_device(request),
+                "detail": {"outcome": reason, "workspace_id": body.workspace_id},
+            })
+            raise HTTPException(status_code=422, detail=reason)
+
+        workspace_id = (body.workspace_id or "").strip()
+        if not workspace_id or not _known_workspace(tools, workspace_id):
+            refuse("unknown_workspace")
+
+        result = tools.focus_workspace(workspace_id)
+        outcome = str(result.get("outcome") or "error")
+        audit_log.record({
+            "action": "workspace.focus",
+            "device": audit_device(request),
+            "detail": {"outcome": outcome, "workspace_id": workspace_id},
+        })
+        if outcome == "focused":
+            return {"ok": True, "workspace_id": workspace_id}
+        if outcome == "unsupported":
+            raise HTTPException(status_code=422, detail="workspaces_unsupported")
+        raise HTTPException(
+            status_code=502,
+            detail=str(result.get("detail") or "No se pudo cambiar de espacio."),
+        )
 
     @app.post("/operator/preset")
     def operator_preset(request: Request, body: OperatorPresetRequest) -> dict:

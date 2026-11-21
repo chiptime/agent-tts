@@ -6,17 +6,28 @@ closed outcome set. The legacy mapping is pinned here — ``delivered``
 stays ``200 {ok: true, pane_id}`` (plus the receipt), ``blocked`` 409,
 ``unknown_pane`` 404, ``error`` 502 — and the new surfaces (steer,
 typed drafts, stop) get their own rows.
+
+f7f S2 adds the multiplexer parity rows at the bottom: a reply
+addressed to a ``zellij:``/``tmux:`` prefixed pane rides the REAL
+route with the REAL tools layer over a CompositeMux whose alternate
+children are fake-runner adapters — same receipt shapes, same audit
+``pane.reply`` row, same body guards as a herdr reply.
 """
 
 from __future__ import annotations
 
 import json
+import subprocess
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 import herdr_brain.server as server_module
 from herdr_brain.config import Settings
+from herdr_brain.herdr import AgentInfo
+from herdr_brain.mux import CompositeMux, TmuxAdapter, ZellijAdapter
+from herdr_brain.tools import BrainTools
 
 
 def _receipt(outcome, detail="", text_hint=""):
@@ -372,3 +383,328 @@ def test_every_write_action_lands_in_the_audit_log(client, tmp_path):
     assert "pane.reply" in actions
     assert "pane.receipt.discard" in actions
     assert "pane.stop" in actions
+
+
+# ── f7f S2: multiplexer pane replies ride the same route ──────────────────────
+#
+# These rows run the REAL route and the REAL BrainTools.verified reply
+# over a CompositeMux: the herdr child is the scripted double the S12
+# suites use, the alternate children are the REAL adapters behind
+# RecordedRunner fixtures (no real tmux/zellij binary is ever invoked;
+# the zellij write-path fixtures are CLI-shape derived and UNVERIFIED
+# live — zellij is not installed on this host, f7f D2).
+
+
+FIXTURES = Path(__file__).parent / "fixtures" / "mux"
+
+
+def _fixture(name: str) -> str:
+    return (FIXTURES / name).read_text()
+
+
+class RecordedRunner:
+    """Replays recorded CLI output in call order, pinning each argv."""
+
+    def __init__(self, *steps):
+        self.steps = list(steps)
+        self.calls: list = []
+
+    def __call__(self, cmd, **kwargs):
+        self.calls.append({"cmd": list(cmd), **kwargs})
+        if not self.steps:
+            raise AssertionError(f"unexpected subprocess call: {cmd}")
+        step = self.steps.pop(0)
+        if isinstance(step, Exception):
+            raise step
+        prefix, rc, out, err = step
+        argv = tuple(cmd[1:])
+        if argv[: len(prefix)] != tuple(prefix):
+            raise AssertionError(
+                f"expected argv starting with {list(prefix)}, got {cmd}"
+            )
+        return subprocess.CompletedProcess(cmd, rc, stdout=out, stderr=err)
+
+
+class ScriptedHerdrChild:
+    """Duck-typed herdr child: one pane, scripted screens, herdr-shaped
+    prompt result — the same double shape test_send_receipts.py drives
+    BrainTools with."""
+
+    def __init__(self, agents, screens, prompt):
+        self._agents = agents
+        self._screens = list(screens)
+        self._prompt = prompt
+
+    def list_agents(self):
+        return list(self._agents)
+
+    def read_screen(self, pane_id, n_lines=None, source="visible", as_ansi=False):
+        if len(self._screens) > 1:
+            return self._screens.pop(0)
+        return self._screens[0]
+
+    def send_prompt(self, pane_id, text, timeout_ms=None):
+        return self._prompt
+
+
+class _QuietWatcher:
+    """Injected watcher: no thread, no listing — status evidence only.
+    ``hub`` is None because create_app probes it (a hub without publish
+    simply leaves the event seams unset)."""
+
+    hub = None
+
+    def last_known_status(self, pane_id):
+        return None
+
+
+class _MuxTools(BrainTools):
+    """The real tools layer bound to a composite mux (fake-runner
+    children); the poll sleeps are stubbed so receipts stay fast."""
+
+    mux = None
+
+    def __init__(self, cfg):
+        super().__init__(
+            cfg, herdr=type(self).mux, clock=lambda: 0.0, sleeper=lambda _s: None
+        )
+
+
+def _herdr_child():
+    return ScriptedHerdrChild(
+        [AgentInfo("w1:p2", "claude", "idle", "opencode", "sess-1", "/repo",
+                   "the pane", True)],
+        screens=["❯ 1) Yes  2) No", "user: hi\nassistant: done"],
+        prompt={"ok": True, "status": "done", "output": "done"},
+    )
+
+
+def _mux_client(monkeypatch, settings, tmp_path, alternate_name, alternate):
+    mux_tools = type("MuxTools", (_MuxTools,), {"mux": CompositeMux({
+        "herdr": _herdr_child(),
+        alternate_name: alternate,
+    })})
+    monkeypatch.setattr(server_module, "BrainTools", mux_tools)
+    cfg = Settings(**{**settings.__dict__, "audio_dir": str(tmp_path / "audio")})
+    app = server_module.create_app(settings=cfg, watcher=_QuietWatcher())
+    return TestClient(app)
+
+
+@pytest.fixture
+def zellij_client(settings, tmp_path, monkeypatch):
+    """Composite herd (herdr + zellij) with the REAL zellij adapter
+    behind a recorded runner. CLI order of one verified reply to pane
+    ``zellij:1``: list → dump (tools' before read) → dump (adapter's
+    before read) → write-chars → write 10 → dump (adapter's re-read,
+    early stop: body moved) → dump (tools' poll read, early stop)."""
+    runner = RecordedRunner(
+        (("list-panes",), 0, _fixture("zellij/list-panes.json"), ""),
+        (("action", "dump-screen"), 0, _fixture("zellij/dump-screen.txt"), ""),
+        (("action", "dump-screen"), 0, _fixture("zellij/dump-screen.txt"), ""),
+        (("action", "write-chars"), 0, "", ""),
+        (("action", "write"), 0, "", ""),
+        (("action", "dump-screen"), 0, _fixture("zellij/dump-prompt-after-sent.txt"), ""),
+        (("action", "dump-screen"), 0, _fixture("zellij/dump-prompt-after-sent.txt"), ""),
+    )
+    client = _mux_client(
+        monkeypatch, settings, tmp_path, "zellij",
+        ZellijAdapter(bin_path="zellij-test", runner=runner),
+    )
+    return client, runner
+
+
+@pytest.fixture
+def tmux_client(settings, tmp_path, monkeypatch):
+    """Composite herd (herdr + tmux) with the REAL tmux adapter behind
+    a recorded runner — the same CLI order as the zellij fixture, with
+    capture-pane reads and the send-keys submit."""
+    runner = RecordedRunner(
+        (("list-panes",), 0, _fixture("tmux/list-panes.txt"), ""),
+        (("capture-pane",), 0, _fixture("tmux/capture-visible.txt"), ""),
+        (("capture-pane",), 0, _fixture("tmux/capture-visible.txt"), ""),
+        (("send-keys", "-t", "%3", "-l"), 0, "", ""),
+        (("send-keys",), 0, "", ""),
+        (("capture-pane",), 0, _fixture("tmux/prompt-after-sent.txt"), ""),
+        (("capture-pane",), 0, _fixture("tmux/prompt-after-sent.txt"), ""),
+    )
+    client = _mux_client(
+        monkeypatch, settings, tmp_path, "tmux",
+        TmuxAdapter(bin_path="tmux-test", runner=runner),
+    )
+    return client, runner
+
+
+def _audit_rows(tmp_path):
+    audit_file = tmp_path / "state" / "audit.log"
+    assert audit_file.exists()
+    return [json.loads(line) for line in audit_file.read_text().splitlines()]
+
+
+class TestMultiplexerReplyParity:
+    def test_zellij_pane_reply_returns_a_verified_receipt(self, zellij_client):
+        client, runner = zellij_client
+
+        resp = client.post(
+            "/pane/reply", json={"pane_id": "zellij:1", "text": "run the probes"}
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["pane_id"] == "zellij:1"
+        receipt = body["receipt"]
+        # Same receipt shape a herdr reply serves: the store-owned keys
+        # plus the closed-set outcome the trackers read.
+        assert receipt["id"].startswith("rct-")
+        assert receipt["pane_id"] == "zellij:1"
+        assert receipt["outcome"] == "sent"
+        assert receipt["text_hint"] == "run the probes"
+        # The write really went through the zellij CLI surface.
+        commands = [call["cmd"] for call in runner.calls]
+        assert ["zellij-test", "action", "write-chars", "--pane-id", "1",
+                "run the probes"] in commands
+        assert ["zellij-test", "action", "write", "--pane-id", "1", "10"] in commands
+        # And the receipts endpoint serves it like any herdr receipt.
+        listed = client.get("/pane/receipts", params={"pane_id": "zellij:1"}).json()
+        assert [r["outcome"] for r in listed["receipts"]] == ["sent"]
+
+    def test_zellij_receipt_is_never_unsupported(self, zellij_client):
+        # The S2 acceptance clause, verbatim: a zellij reply returns a
+        # closed-set verified outcome, never an `unsupported` refusal.
+        client, _runner = zellij_client
+
+        resp = client.post(
+            "/pane/reply", json={"pane_id": "zellij:1", "text": "run the probes"}
+        )
+
+        assert resp.status_code == 200  # not the 502 of a refused send
+        outcome = resp.json()["receipt"]["outcome"]
+        assert outcome in ("sent", "typed_not_submitted", "unknown")
+        assert outcome != "unsupported"
+
+    def test_zellij_typed_draft_keeps_the_receipt_card(self, settings, tmp_path,
+                                                       monkeypatch):
+        # The typed_not_submitted fixture: the echo survives every
+        # re-read, so the receipt stays re-offerable exactly like a
+        # herdr draft (200 + ok:false + Submit/Discard follow-ups).
+        runner = RecordedRunner(
+            (("list-panes",), 0, _fixture("zellij/list-panes.json"), ""),
+            (("action", "dump-screen"), 0, _fixture("zellij/dump-screen.txt"), ""),
+            (("action", "dump-screen"), 0, _fixture("zellij/dump-screen.txt"), ""),
+            (("action", "write-chars"), 0, "", ""),
+            (("action", "write"), 0, "", ""),
+            (("action", "dump-screen"), 0, _fixture("zellij/dump-prompt-after-typed.txt"), ""),
+            (("action", "dump-screen"), 0, _fixture("zellij/dump-prompt-after-typed.txt"), ""),
+            (("action", "dump-screen"), 0, _fixture("zellij/dump-prompt-after-typed.txt"), ""),
+            (("action", "dump-screen"), 0, _fixture("zellij/dump-prompt-after-typed.txt"), ""),
+            (("action", "dump-screen"), 0, _fixture("zellij/dump-prompt-after-typed.txt"), ""),
+        )
+        client = _mux_client(
+            monkeypatch, settings, tmp_path, "zellij",
+            ZellijAdapter(bin_path="zellij-test", runner=runner),
+        )
+
+        resp = client.post(
+            "/pane/reply", json={"pane_id": "zellij:1", "text": "run the probes"}
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is False
+        assert body["receipt"]["outcome"] == "typed_not_submitted"
+
+    def test_tmux_pane_reply_returns_a_verified_receipt(self, tmux_client):
+        client, runner = tmux_client
+
+        resp = client.post(
+            "/pane/reply", json={"pane_id": "tmux:%3", "text": "run the probes"}
+        )
+
+        assert resp.status_code == 200
+        receipt = resp.json()["receipt"]
+        assert receipt["outcome"] == "sent"
+        assert receipt["pane_id"] == "tmux:%3"
+        # The submit itself rode send-keys with the literal text.
+        commands = [call["cmd"] for call in runner.calls]
+        assert ["tmux-test", "send-keys", "-t", "%3", "-l",
+                "run the probes"] in commands
+
+    @pytest.mark.parametrize("pane_id", ["w1:p2", "zellij:1", "tmux:%3"])
+    def test_body_guards_apply_identically_to_multiplexer_panes(
+        self, zellij_client, pane_id
+    ):
+        # Same guard behavior as a herdr reply: the route's own body
+        # validation (required pair, 8000-char bound, no bare
+        # whitespace) refuses BEFORE any pane is touched.
+        client, runner = zellij_client
+
+        oversized = client.post(
+            "/pane/reply", json={"pane_id": pane_id, "text": "x" * 8_001}
+        )
+        blank = client.post(
+            "/pane/reply", json={"pane_id": pane_id, "text": "  \n "}
+        )
+
+        assert oversized.status_code == 422
+        assert blank.status_code == 422
+        assert runner.calls == []
+
+    def test_unknown_zellij_pane_is_404_never_redirected(self, settings, tmp_path,
+                                                         monkeypatch):
+        # An unknown zellij pane answers exactly like an unknown herdr
+        # pane: 404 with the store detail — a reply is never rerouted
+        # to another pane.
+        runner = RecordedRunner(
+            (("list-panes",), 0, _fixture("zellij/list-panes.json"), ""),
+        )
+        client = _mux_client(
+            monkeypatch, settings, tmp_path, "zellij",
+            ZellijAdapter(bin_path="zellij-test", runner=runner),
+        )
+
+        resp = client.post(
+            "/pane/reply", json={"pane_id": "zellij:99", "text": "hi"}
+        )
+
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "pane not found"
+
+    def test_zellij_reply_writes_the_same_audit_row(self, settings, tmp_path,
+                                                     monkeypatch):
+        # One herdr reply and one zellij reply through the SAME app:
+        # their pane.reply rows must have the identical shape (the
+        # audit omits None attribution fields — device appears when a
+        # paired device made the request, never for one pane kind only).
+        runner = RecordedRunner(
+            (("list-panes",), 0, _fixture("zellij/list-panes.json"), ""),  # herdr reply listing
+            (("list-panes",), 0, _fixture("zellij/list-panes.json"), ""),  # zellij reply listing
+            (("action", "dump-screen"), 0, _fixture("zellij/dump-screen.txt"), ""),
+            (("action", "dump-screen"), 0, _fixture("zellij/dump-screen.txt"), ""),
+            (("action", "write-chars"), 0, "", ""),
+            (("action", "write"), 0, "", ""),
+            (("action", "dump-screen"), 0, _fixture("zellij/dump-prompt-after-sent.txt"), ""),
+            (("action", "dump-screen"), 0, _fixture("zellij/dump-prompt-after-sent.txt"), ""),
+        )
+        client = _mux_client(
+            monkeypatch, settings, tmp_path, "zellij",
+            ZellijAdapter(bin_path="zellij-test", runner=runner),
+        )
+
+        herdr = client.post("/pane/reply", json={"pane_id": "w1:p2", "text": "hi"})
+        zellij = client.post(
+            "/pane/reply", json={"pane_id": "zellij:1", "text": "run the probes"}
+        )
+
+        assert herdr.status_code == 200
+        assert zellij.status_code == 200
+        rows = [row for row in _audit_rows(tmp_path) if row["action"] == "pane.reply"]
+        assert len(rows) == 2
+        herdr_row, zellij_row = rows
+        assert herdr_row["pane_id"] == "w1:p2"
+        assert zellij_row["pane_id"] == "zellij:1"
+        # Identical shape: same keys, same detail structure — only the
+        # values differ.
+        assert set(herdr_row) == set(zellij_row)
+        assert set(herdr_row["detail"]) == set(zellij_row["detail"])
+        assert zellij_row["detail"]["outcome"] == "delivered"
+        assert zellij_row["detail"]["text"] == "run the probes"

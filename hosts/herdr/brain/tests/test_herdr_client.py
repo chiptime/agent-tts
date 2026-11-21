@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -270,6 +271,54 @@ class TestAgentWait:
         client = HerdrClient(make_settings(), runner=runner)
         with pytest.raises(HerdrError, match="wait boom"):
             client.agent_wait("w2:p1")
+
+
+class TestFocusWorkspace:
+    """``herdr workspace focus <workspace_id>`` (f7f S4).
+
+    The argv shape is fixture-derived: the pinned ``--help`` output
+    (tests/fixtures/herdr-workspace-focus-help.txt, captured from this
+    host's CLI) names ONE positional argument and no flags. The success
+    OUTPUT is UNVERIFIED-live (focusing changes the operator's real
+    active workspace — never run in tests), so the method returns
+    whatever the CLI printed instead of parsing an envelope it cannot
+    vouch for; only the exit code carries meaning.
+    """
+
+    FOCUS_HELP = (
+        Path(__file__).parent / "fixtures" / "herdr-workspace-focus-help.txt"
+    )
+
+    def test_the_pinned_help_names_one_positional_argument(self):
+        raw = self.FOCUS_HELP.read_text(encoding="utf-8")
+        assert "Usage: herdr workspace focus <workspace_id>" in raw
+        # The ONLY argument is the workspace id: the Arguments block
+        # names it alone — no flags, no target.
+        args_block = raw.split("Arguments:", 1)[1]
+        assert args_block.strip() == "<workspace_id>"
+
+    def test_builds_expected_command_and_returns_stdout(self):
+        printed = '{"id":"cli:workspace:focus","result":{"ok":true}}'
+        runner = FakeRunner(results=[(0, printed, "")])
+        client = HerdrClient(make_settings(), runner=runner)
+        out = client.focus_workspace("w2")
+        assert runner.calls[0]["cmd"] == [
+            "herdr-fake", "workspace", "focus", "w2",
+        ]
+        assert out == printed
+
+    def test_nonzero_exit_raises_with_stderr_detail(self):
+        runner = FakeRunner(results=[(1, "", "workspace boom")])
+        client = HerdrClient(make_settings(), runner=runner)
+        with pytest.raises(HerdrError, match="workspace boom"):
+            client.focus_workspace("w2")
+
+    def test_empty_id_refused_without_invoking(self):
+        runner = FakeRunner(results=[])
+        client = HerdrClient(make_settings(), runner=runner)
+        with pytest.raises(HerdrError, match="empty"):
+            client.focus_workspace("   ")
+        assert runner.calls == []
 
 
 class TestOaLaunchComposition:

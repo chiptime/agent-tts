@@ -835,8 +835,11 @@
     convSheetOpen = true;
     setConvSheet(true);
     /* The session list opens with live statuses. Herd only: a /view
-     * fetch here would race the one the row tap is about to start. */
+     * fetch here would race the one the row tap is about to start.
+     * Espacios (f7f S4) rides the New sheet's /session/roots OPEN
+     * fetch discipline — the same payload, no second endpoint. */
     refreshHerd();
+    refreshSpaces();
     try { history.pushState({ herdrConvSheet: true }, ""); } catch (err) { /* non-http origins */ }
     try { convCloseBtn.focus({ preventScroll: true }); } catch (err) { /* no focus API */ }
   }
@@ -858,6 +861,176 @@
   });
   convCloseBtn.addEventListener("click", closeConvSheet);
   convBackdrop.addEventListener("click", closeConvSheet);
+
+  /* ---------------- Espacios (f7f S4, audit 03 §5) ----------------
+   * The conversation sheet's space switcher: one compact section
+   * between the "＋ Nueva conversación" action and the agent rows,
+   * listing every herdr workspace from the SAME /session/roots payload
+   * the New sheet fetches (no second endpoint, fetched when the sheet
+   * OPENS — never at boot). Tapping a space POSTs /workspace/focus,
+   * toasts, closes the sheet and re-runs the refresh set a chip tap
+   * triggers. When the active multiplexer has no herdr child (a
+   * composite of tmux+zellij, or a bare alternate), the declared
+   * capabilities carried by the payload's additive mux summary decide:
+   * the section renders the honest explanation instead of rows. The
+   * container is JS-built — the sheet's static shell stays untouched. */
+
+  /* @spaces-pure-start */
+  function spacesSwitchModel() {
+    /* The section's shape from the /session/roots spaces + the
+     * additive mux summary. Pure data shaping: "rows" when the
+     * multiplexer carries herdr spaces (a composite with a herdr child
+     * included), "unsupported" naming the declared children for the
+     * honest explanation, "hidden" when the payload predates the mux
+     * field (nothing is claimed either way). */
+    function section(spaces, mux) {
+      var children = mux && Array.isArray(mux.children) ? mux.children : null;
+      var hasHerdr = !!children && children.indexOf("herdr") !== -1;
+      if (!hasHerdr) {
+        if (!mux || !children) return { mode: "hidden" };
+        var names = [];
+        for (var i = 0; i < children.length; i++) {
+          if (children[i]) names.push(String(children[i]));
+        }
+        return {
+          mode: "unsupported",
+          names: names.length ? names.join(", ") : String(mux.name || ""),
+        };
+      }
+      var rows = [];
+      var list = Array.isArray(spaces) ? spaces : [];
+      for (var j = 0; j < list.length; j++) {
+        var space = list[j];
+        if (!space || typeof space !== "object") continue;
+        var id = space.workspace_id;
+        if (typeof id !== "string" || !id) continue;
+        var label = typeof space.label === "string" && space.label ? space.label : id;
+        rows.push({
+          workspace_id: id,
+          label: label,
+          cwd: typeof space.cwd === "string" && space.cwd ? space.cwd : "",
+          focused: !!space.focused,
+        });
+      }
+      return { mode: "rows", rows: rows };
+    }
+
+    return { section: section };
+  }
+  /* @spaces-pure-end */
+
+  var spModel = spacesSwitchModel();
+  var convSpacesEl = null;
+  var convSpacesBody = null;
+
+  function ensureSpacesSection() {
+    if (convSpacesEl) return;
+    convSpacesEl = document.createElement("div");
+    convSpacesEl.id = "conv-spaces";
+    convSpacesEl.style.cssText =
+      "flex:0 0 auto;padding:10px 14px;border-bottom:1px solid var(--line);";
+    var title = document.createElement("div");
+    title.style.cssText =
+      "font-size:13px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;";
+    title.textContent = t("spaces.title");
+    convSpacesEl.appendChild(title);
+    convSpacesBody = document.createElement("div");
+    convSpacesBody.style.cssText =
+      "display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;";
+    convSpacesEl.appendChild(convSpacesBody);
+    convList.parentNode.insertBefore(convSpacesEl, convList);
+  }
+
+  function renderSpaces(body) {
+    body = body || {};
+    ensureSpacesSection();
+    var shape = spModel.section(body.spaces, body.mux);
+    convSpacesEl.style.display = shape.mode === "hidden" ? "none" : "";
+    while (convSpacesBody.firstChild) {
+      convSpacesBody.removeChild(convSpacesBody.firstChild);
+    }
+    if (shape.mode === "unsupported") {
+      var note = document.createElement("div");
+      note.style.cssText =
+        "padding:4px 0;font-size:var(--fs-sm);color:var(--muted);font-style:italic;";
+      /* Text node only: the names come from the server's own summary. */
+      note.textContent = t("spaces.unsupported", { names: shape.names });
+      convSpacesBody.appendChild(note);
+      return;
+    }
+    if (!shape.rows.length) {
+      var empty = document.createElement("div");
+      empty.style.cssText =
+        "padding:4px 0;font-size:var(--fs-sm);color:var(--muted);font-style:italic;";
+      empty.textContent = t("spaces.empty");
+      convSpacesBody.appendChild(empty);
+      return;
+    }
+    for (var i = 0; i < shape.rows.length; i++) {
+      renderSpaceRow(shape.rows[i]);
+    }
+  }
+
+  function renderSpaceRow(space) {
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "cs-space" + (space.focused ? " current" : "");
+    btn.style.cssText =
+      "min-height:44px;padding:8px 12px;font-size:14px;font-weight:600;" +
+      "color:var(--text);background:var(--chip-bg);border:1px solid " +
+      (space.focused ? "var(--accent)" : "var(--line)") +
+      ";border-radius:10px;display:inline-flex;align-items:center;gap:6px;";
+    btn.setAttribute("data-space", space.workspace_id);
+    if (space.cwd) btn.title = space.cwd;
+    /* Text node only: labels are server data, never markup. */
+    btn.textContent = space.label;
+    if (space.focused) {
+      var badge = document.createElement("span");
+      badge.style.cssText =
+        "font-size:11px;font-weight:700;color:var(--accent);" +
+        "text-transform:uppercase;letter-spacing:.04em;";
+      badge.textContent = t("spaces.current");
+      btn.appendChild(badge);
+    }
+    btn.addEventListener("click", (function (row) {
+      return function () { focusSpace(row); };
+    })(space));
+    convSpacesBody.appendChild(btn);
+  }
+
+  function focusSpace(space) {
+    fetch("/workspace/focus", withDeviceAuth({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workspace_id: space.workspace_id }),
+    }))
+      .then(function (resp) {
+        if (resp.status === 200) return resp.json();
+        maybeOfferPairing(resp);
+        return resp.json().then(function () { return null; }, function () { return null; });
+      })
+      .then(function (body) {
+        if (!body || !body.ok) {
+          showToast(t("spaces.focus_failed"), 4000);
+          return;
+        }
+        showToast(t("spaces.focused", { name: space.label }), 4000);
+        closeConvSheet();
+        refreshState();  /* the same refresh set a chip tap triggers */
+      })
+      .catch(function () { showToast(t("spaces.focus_failed"), 4000); });
+  }
+
+  /* The sheet answers to the operator LOOKING at it (the New sheet's
+   * discipline): every open refetches roots+spaces+mux in the SAME one
+   * round-trip the launch sheet rides; a failed read keeps the last
+   * render — a read never toasts. */
+  function refreshSpaces() {
+    readFetch("/session/roots")
+      .then(function (resp) { return resp.json(); })
+      .then(renderSpaces)
+      .catch(function () { /* keep the last render */ });
+  }
 
   /* ---------------- Llamadas popup (2026-11-17) ----------------
    * The call history LEFT the drawer (it is not the main thing

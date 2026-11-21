@@ -17,6 +17,7 @@ from herdr_brain.mux import (
     CAPABILITY_NAMES,
     REFUSAL_REASONS,
     Capabilities,
+    CompositeMux,
     HerdrMuxAdapter,
     MuxAdapter,
     MuxRefusal,
@@ -277,6 +278,14 @@ def _zellij() -> ZellijAdapter:
 )
 def test_every_adapter_satisfies_the_port_protocol(factory):
     assert isinstance(factory(), MuxAdapter)
+
+
+def test_composite_satisfies_the_port_protocol():
+    # The composite (HERDR_BRAIN_MUX list) routes over real adapters;
+    # with a herdr child it must satisfy the port like every one of
+    # them, so consumers keep taking whatever create_mux returns.
+    child = HerdrMuxAdapter(RecordingClient())
+    assert isinstance(CompositeMux({"herdr": child}), MuxAdapter)
 
 
 def test_bare_herdr_client_is_not_a_mux_adapter(settings):

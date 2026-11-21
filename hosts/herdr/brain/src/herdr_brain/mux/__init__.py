@@ -16,6 +16,9 @@ route:
 - :mod:`adapters` — ``herdr`` (composition, byte-identical behavior),
   ``tmux`` (mirror + keys + tabs; agents refused), ``zellij``
   (raw mirror; every write refused).
+- :mod:`composite` — :class:`CompositeMux`, several adapters behind one
+  port when ``HERDR_BRAIN_MUX`` holds a list; pane ids route by origin
+  prefix and herdr ids stay bare.
 - :mod:`registry` — :func:`create_mux` selects by ``HERDR_BRAIN_MUX``;
   :func:`probe_mux` checks reachability.
 """
@@ -26,6 +29,7 @@ from .adapters.herdr import HerdrMuxAdapter
 from .adapters.tmux import TmuxAdapter
 from .adapters.zellij import ZellijAdapter
 from .capabilities import CAPABILITY_NAMES, Capabilities, MuxProbe
+from .composite import CompositeMux
 from .keys import SENDABLE_KEYS, is_sendable_key, normalize_key, tmux_key
 from .protocol import MuxAdapter
 from .refusal import REFUSAL_REASONS, MuxRefusal
@@ -37,6 +41,7 @@ __all__ = [
     "MUX_NAMES",
     "REFUSAL_REASONS",
     "Capabilities",
+    "CompositeMux",
     "HerdrMuxAdapter",
     "MuxAdapter",
     "MuxProbe",

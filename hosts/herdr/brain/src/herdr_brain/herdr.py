@@ -342,6 +342,25 @@ class HerdrClient:
         proc = self._run_cli(["pane", "list"], timeout_s=15)
         return parse_pane_list(proc.stdout)
 
+    def focus_workspace(self, workspace_id: str) -> str:
+        """Focuses a herdr workspace and returns what the CLI printed.
+
+        Argv shape fixture-derived from ``herdr workspace focus --help``
+        (pinned at tests/fixtures/herdr-workspace-focus-help.txt, this
+        host's CLI): ONE positional ``<workspace_id>``, no flags. The
+        SUCCESS OUTPUT is UNVERIFIED-live — focusing changes the
+        operator's real active workspace, so no test or probe may run
+        it — which is why this returns the CLI's stdout verbatim
+        instead of parsing an envelope nobody has seen; only the exit
+        code carries meaning (non-zero raises :class:`HerdrError` with
+        the stderr detail, like every other command).
+        """
+        clean = (workspace_id or "").strip()
+        if not clean:
+            raise HerdrError("refusing to focus an empty workspace id")
+        proc = self._run_cli(["workspace", "focus", clean], timeout_s=15)
+        return (proc.stdout or "").strip()
+
     def active_agent(self) -> Optional[AgentInfo]:
         return pick_active(self.list_agents())
 

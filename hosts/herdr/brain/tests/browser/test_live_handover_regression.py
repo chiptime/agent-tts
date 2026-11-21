@@ -28,6 +28,13 @@ class Tools:
         return [dict(pane_id=p, agent="opencode", agent_status="idle", title=p,
                      focused=p == PANES[1], cwd="/repo", session_id="agent-"+p,
                      last_turn=None) for p in PANES]
+    def list_workspaces(self):
+        # f7f S4: opening the conversation sheet (select_agent) fetches
+        # /session/roots; an empty workspace listing serves that read
+        # (the sheet's "Espacios" section renders "Sin espacios")
+        # without touching any assertion — the same server-double seam
+        # herd()/agent_view() already ride.
+        return []
     def agent_view(self, pane_id=None):
         return dict(status=dict(active=True, pane_id=pane_id or PANES[1],
                     agent="opencode", agent_status="idle"), screen=None,
