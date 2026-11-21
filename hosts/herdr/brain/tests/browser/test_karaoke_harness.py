@@ -144,7 +144,7 @@ EXPECTED_DIGESTS = {
     # the conversation sheet reuses that sheet's history entry
     # (replaceState handover) — the pending history.back() traversal
     # used to close the just-opened sheet.
-    "/app.js": "f3457048bd5b1fd6224a299bed9b1e10c1bc54f5eac20ad044801b7d161c7f6d",
+    "/app.js": "bb84ec9cd790c32c255bc3e42a8601e477ce3c492989336d34006c113416573d",
     "/push.js": "e1acadd98d95420cf9924ea633b32d9ec5b51c8654c5e7df923c2bbc5547f52c",
     "/receipts.js": "df01a313d8f6101bd9601d5a2a65eb420df7791c417a09e2d0d8c269a36742b0",
     # dialogs.js re-pinned for the parity-f7d follow-up: MODEL_SWITCH_COMMANDS
@@ -175,8 +175,8 @@ EXPECTED_DIGESTS = {
     # Both i18n re-pinned for parity-f7g S5: the track.* keys (the
     # tracker card's Spanish lines and their English locale ride).
     # Re-pinned for parity T4/S4: newsession.err_resume_workspace.
-    "/i18n/en.js": "4f2c54d780c9058add7aaa892fd46b4a160c61c1ce431bf4ed8a86a03623b0f3",
-    "/i18n/es.js": "eda4858d4ec10f6d0992c262a24aa5521284145a289636615ce273a90bf4d4fd",
+    "/i18n/en.js": "aa5b672ce98ae7de13a740c7e9bf4ce933acdbc598802de189e919ef0e2c30e4",
+    "/i18n/es.js": "0cce6e23f3a31f51e4ba63560a0f688cf3415b1e03b4bbb4ace7e8df1c19321e",
     "/settings.js": "1c2cf3ed92bf959c19ecde0107618b8d1ff0690d2c6fa7c842a2fdc551e05f72",
     "/updates.js": "7f87250cf6cd9c2b8944da632fe036d0c18a87a90f48f70b84e18bcd338cfa84",
     "/calls.js": "9b9ec591709d282c6e673770b2ffc1ed1562650104d8e8393126d186aa764165",
