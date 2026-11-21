@@ -401,6 +401,7 @@ class BrainLLM:
         session_id: Optional[str] = None,
         pane_id: Optional[str] = None,
         cancel_event: Optional[threading.Event] = None,
+        device: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Returns ``{answer, pane_id, agent, session_id, approval}``.
 
@@ -501,7 +502,9 @@ class BrainLLM:
                     for call in choice.tool_calls:
                         if aborted():
                             raise TurnCancelled("client disconnected before a tool call")
-                        result, gate = self._invoke(call, session_key=key, turn_text=question)
+                        result, gate = self._invoke(
+                            call, session_key=key, turn_text=question, device=device
+                        )
                         if gate is not None:
                             opened_gate = gate
                         # A voice switch mid-turn retargets the REST of the
@@ -658,7 +661,11 @@ class BrainLLM:
         return build_live_context(target, pending=pending, dialog=dialog, holds=holds)
 
     def _invoke(
-        self, call: Any, session_key: str, turn_text: Optional[str] = None
+        self,
+        call: Any,
+        session_key: str,
+        turn_text: Optional[str] = None,
+        device: Optional[str] = None,
     ) -> tuple[str, Optional[ApprovalGate]]:
         """Dispatches one tool call, turning every failure into a string.
 
@@ -669,7 +676,12 @@ class BrainLLM:
         ``(tool_message, gate_or_None)``. ``turn_text`` is the CURRENT
         turn's real user text: it rides the dispatch so answer_dialog
         authorizes against the user's actual words, never the model's
-        paraphrase of them (S9/B4).
+        paraphrase of them (S9/B4). ``device`` is the authenticated
+        device label the /ask boundary resolved (T3-fu): a STRUCTURAL
+        parameter like ``turn_text`` — never derived from the model's
+        ``arguments`` — so voice audit lines attribute the device that
+        spoke. The kwarg only flies when a device resolved, so legacy
+        three-argument dispatch doubles keep their exact call shape.
         """
         try:
             arguments = json.loads(call.function.arguments or "{}")
@@ -695,6 +707,7 @@ class BrainLLM:
                 target=self._request_target,
                 context_id=session_key,  # consult tools key on D08 isolation
                 turn_text=turn_text,
+                **({"device": device} if device is not None else {}),
             ),
             None,
         )

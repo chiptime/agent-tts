@@ -1460,6 +1460,13 @@ def create_app(
     # action can never be failed by it.
     audit_log = AuditLog(cfg.state_dir / "audit.log", content=cfg.audit_content)
 
+    # The verbal dialog tools share the same trail (T3/S3): the voice
+    # answer_dialog records its own line per verified-live-dialog call.
+    # Same attach-after-construction seam as attach_hook_broker —
+    # injected doubles without it simply keep the old behavior.
+    if hasattr(tools, "attach_audit"):
+        tools.attach_audit(audit_log)
+
     def audit_device(request: Optional[Request]) -> Optional[str]:
         """The paired-device label the access middleware resolved for
         this request, or None on channels that carry no device identity
@@ -1514,12 +1521,57 @@ def create_app(
             ),
         )
 
-    def crew_call(peer: str, call):
+    def _audit_crew_call_failure(
+        peer: str,
+        op: Optional[str],
+        outcome: str,
+        status: Optional[int],
+        detail_message: Optional[str],
+        extra: Optional[dict] = None,
+    ) -> None:
+        """One trail line for a failed proxied WRITE attempt (T3-fu/U6).
+
+        Write ops only (reply/keys/dialog_answer/gate_forward); the
+        refusal detail is the peer's own HTTP error detail — the same
+        string the route already surfaces — and unreachable failures
+        carry the FACT, not the transport text (the 503 response and
+        the ops logger do). record() is fire-and-forget, never altering
+        the failure path."""
+        if op is None:
+            return
+        detail: dict = {"peer": peer, "op": op, "outcome": outcome}
+        if status is not None:
+            detail["status"] = status
+        if detail_message:
+            detail["detail"] = detail_message
+        if extra:
+            detail.update(extra)
+        audit_log.record({"action": "crew.call", "detail": detail})
+        # One bounded, metadata-only ops line for every failed WRITE
+        # attempt — no transport text, no tokens (the 503 response
+        # already owns the full diagnostic for the caller).
+        logger.warning(
+            "crew call failed: peer=%s op=%s outcome=%s status=%s",
+            peer, op, outcome, status,
+        )
+
+    def crew_call(peer: str, call, op: Optional[str] = None):
         """Runs one ``CrewClient`` call with uniform failure mapping:
         the peer's refusal status travels back as-is, an unreachable
-        peer is a 503 that names it."""
+        peer is a 503 that names it.
+
+        T3-fu: a FAILED proxied WRITE attempt (``op`` set) records one
+        ``crew.call`` audit line so the lead's trail answers what was
+        attempted across the link — refused (the peer's own status and
+        error detail, exactly what the route surfaces in its 4xx), or
+        unreachable (no transport text in the trail; the 503 and the
+        ops logger carry it). Read proxies pass no ``op``: reads are
+        not write actions and record nothing. Successes record nothing
+        here — the routes' own ``crew: True`` lines already own them.
+        """
         client = crew_gateway.client_for(peer) if crew_gateway else None
         if client is None:
+            _audit_crew_call_failure(peer, op, "unavailable", None, None)
             raise HTTPException(
                 status_code=503,
                 detail=f"el peer del crew '{peer}' no está disponible",
@@ -1530,8 +1582,10 @@ def create_app(
             detail = (
                 exc.body.get("detail") if isinstance(exc.body, dict) else None
             ) or f"el peer del crew '{peer}' rechazó la operación"
+            _audit_crew_call_failure(peer, op, "refused", int(exc.status), detail)
             raise HTTPException(status_code=int(exc.status), detail=detail) from exc
         except CrewUnreachable as exc:
+            _audit_crew_call_failure(peer, op, "unreachable", None, None)
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
@@ -2846,6 +2900,13 @@ def create_app(
                     if getattr(llm, "takes_cancel_event", False)
                     else {}
                 )
+                # T3-fu: the authenticated device rides the turn as a
+                # structural parameter so voice audit lines attribute it.
+                # Passed only when it resolved — legacy ask doubles keep
+                # their exact call shape on unpaired channels.
+                turn_device = audit_device(request)
+                if turn_device:
+                    ask_kwargs["device"] = turn_device
                 result = llm.ask(
                     body.text,
                     session_id=body.session_id,
@@ -3179,7 +3240,8 @@ def create_app(
         if crew_peer is not None:
             _, remote_id = split_pane_id(body.pane_id)
             result = crew_call(
-                crew_peer, lambda client: client.reply(remote_id, body.text)
+                crew_peer, lambda client: client.reply(remote_id, body.text),
+                op="reply",
             )
             audit_log.record({
                 "action": "pane.reply",
@@ -3468,7 +3530,8 @@ def create_app(
         if crew_peer is not None:
             _, remote_id = split_pane_id(body.pane_id)
             result = crew_call(
-                crew_peer, lambda client: client.keys(remote_id, body.keys)
+                crew_peer, lambda client: client.keys(remote_id, body.keys),
+                op="keys",
             )
             audit_log.record({
                 "action": "pane.keys",
@@ -3535,6 +3598,7 @@ def create_app(
             result = crew_call(
                 crew_peer,
                 lambda client: client.dialog_answer(remote_id, answer_payload),
+                op="dialog_answer",
             )
             crew_detail = {
                 "outcome": "answered",
@@ -4392,7 +4456,20 @@ def create_app(
         verbatim — its 404 for a dead gate is the answer."""
         if crew_gateway is None:
             return None
-        forwarded = crew_gateway.forward_gate(gate_id, decision)
+        try:
+            forwarded = crew_gateway.forward_gate(gate_id, decision)
+        except CrewUnreachable as exc:
+            # T3-fu2: the ONE forward failure mode that returns no
+            # answer — the client raises on transport. Same
+            # failed-attempt line and metadata-only ops warning as
+            # every crew write (crew_call's policy), mapped to the same
+            # 503. Returned outcomes (applied, the owner's refusal, the
+            # dead-gate 404) keep their single approval.forward line.
+            _audit_crew_call_failure(
+                exc.peer, "gate_forward", "unreachable", None, None,
+                extra={"gate_id": gate_id, "decision": decision},
+            )
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         if forwarded is None:
             return None
         audit_log.record({
@@ -4871,13 +4948,35 @@ def create_app(
                 if verified is not None
                 else tools.reply_to_pane(pane_id, text)
             )
-            return _crew_reply_outcome(result, pane_id)
+            response = _crew_reply_outcome(result, pane_id)
+            # Host-local trail of the write this peer just executed
+            # (T3/S3, doc 10's host-local audit). Same line the HTTP
+            # route records for a tap, plus `crew` marking the channel;
+            # no `device` — the crew link carries no paired device
+            # bearer (the _h_approval_action convention). The lead's
+            # own trail records the proxied send; duplicates never
+            # happen on one machine.
+            audit_log.record({
+                "action": "pane.reply",
+                "pane_id": pane_id,
+                "detail": {
+                    "outcome": result["outcome"], "text": text, "crew": True,
+                },
+            })
+            return response
 
         def _h_keys(pane_id, keys):
             if not isinstance(keys, list) or not keys:
                 return 400, {"detail": "keys must be a non-empty array"}
             result = tools.send_keys_to_pane(pane_id, keys)
             outcome = result["outcome"]
+            # Refusals and errors record the same way: the explicit
+            # failed-attempt policy starts where the tool runs.
+            audit_log.record({
+                "action": "pane.keys",
+                "pane_id": pane_id,
+                "detail": {"outcome": outcome, "keys": keys, "crew": True},
+            })
             if outcome == "sent":
                 return {"ok": True, "pane_id": pane_id}
             return (404 if outcome == "unknown_pane" else 502), {
@@ -4893,6 +4992,23 @@ def create_app(
                 text=payload.get("text"),
             )
             outcome = result["outcome"]
+            # One line per answer attempt, refusals included (T3/S3):
+            # the route-level shape plus the crew channel marker.
+            detail = {
+                "outcome": outcome,
+                "reason": result.get("reason", ""),
+                "option": payload.get("option"),
+                "choices": payload.get("choices"),
+                "fingerprint": payload.get("fingerprint"),
+                "crew": True,
+            }
+            if payload.get("text") is not None:
+                detail["text"] = payload.get("text")
+            audit_log.record({
+                "action": "pane.dialog.answer",
+                "pane_id": pane_id,
+                "detail": detail,
+            })
             if outcome == "answered":
                 return {
                     "ok": True, "pane_id": pane_id,

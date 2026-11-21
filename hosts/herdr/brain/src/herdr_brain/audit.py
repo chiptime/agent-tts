@@ -48,7 +48,12 @@ AuditValue = Union[None, bool, int, float, str, list, dict]
 # The metadata allowlist for "none" mode, matched by key name at ANY
 # depth inside ``detail``. A string survives only if its key names an
 # action PARAMETER — an id, an enum-ish outcome, a revision, a reply
-# word from a closed set, an utterance length. Anything
+# word from a closed set, an utterance length, or the action's ATTRIBUTION
+# (``by`` — the decision's author: a device label or the verbal path's
+# "voice"; attribution is the envelope ``device``'s in-detail twin and
+# must survive redaction the same way, T3/S3). The failed-crew-attempt
+# line's ``peer`` (a roster member id) and ``op`` (a closed operation
+# enum) are the same class of metadata, T3-fu. Anything
 # screen- or operator-originated (``text``, ``label``) must not be
 # listed. The direction of the default is the whole feature: a detail
 # field added later under a new name redacts until someone
@@ -67,6 +72,9 @@ METADATA_KEYS = frozenset({
     "request_id",
     "chars",
     "spoken",
+    "by",
+    "peer",
+    "op",
 })
 
 # A constant, never "⟨n chars⟩". An exact length is itself content — a

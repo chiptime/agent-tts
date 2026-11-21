@@ -23,6 +23,7 @@ from herdr_brain.approval_lexicon import (
     resolve_dialog_choices,
     resolve_dialog_free_text,
 )
+from herdr_brain.audit import AuditLog, REDACTED
 from herdr_brain.herdr import AgentInfo
 from herdr_brain.tools import BrainTools
 from herdr_brain.view import ansi_runs, parse_dialog
@@ -1668,3 +1669,235 @@ class TestSwitchModelApproveReplay:
         # The refusal detail (candidate names) never rides the audit
         # line: the model name alone is metadata.
         assert "opus is ambiguous" not in audit
+
+
+# ── voice answer audit (T3/S3): one line per verified-live-dialog call ──────
+
+
+class TestVoiceAnswerAudit:
+    """S3 on the verbal path: an answer_dialog call that reaches a
+    verified live dialog records exactly one audit line — answered or
+    refused, with the refusal reason — mirroring what the HTTP
+    /pane/dialog/answer route records for a tap. `spoken` marks the
+    verbal intake the way the voice approval.resolve design does;
+    terminations before a live dialog is verified (nothing spoken yet,
+    dialog gone or changed since) are admission failures and record
+    nothing, the same convention as HTTP body validation."""
+
+    def _tools(self, settings, tmp_path, stub=None, content="preview"):
+        stub = stub if stub is not None else DialogStub()
+        built = BrainTools(settings, herdr=stub, sleeper=lambda _s: None)
+        log = AuditLog(tmp_path / "audit.log", content=content)
+        built.attach_audit(log)
+        return built, stub, tmp_path / "audit.log"
+
+    def _lines(self, path):
+        if not path.exists():
+            return []
+        return [json.loads(x) for x in path.read_text().splitlines() if x.strip()]
+
+    def test_answered_choice_records_one_line(self, settings, tmp_path):
+        built, stub, path = self._tools(settings, tmp_path)
+        explain_and_advance_turn(built)
+
+        result = json.loads(built.answer_dialog("dile que sí", BLOCKED_AGENT))
+
+        assert result["outcome"] == "answered"
+        assert stub.key_calls == [{"pane_id": "w1:p9", "keys": ["enter"]}]
+        lines = self._lines(path)
+        assert len(lines) == 1
+        line = lines[0]
+        assert line["action"] == "pane.dialog.answer"
+        assert line["pane_id"] == "w1:p9"
+        assert "device" not in line  # the ask loop carries no request device
+        assert line["detail"] == {
+            "outcome": "answered", "option": 1, "keys": ["enter"], "spoken": True,
+        }
+
+    def test_voice_send_failure_audits_only_the_specified_refusal_fields(
+        self, settings, tmp_path,
+    ):
+        """A refused mux send records the refusal FACT, never the mux's
+        error text: no existing record site persists tool failure detail,
+        and the refusal shape stays exactly {outcome, reason, spoken}."""
+        stub = DialogStub()
+        stub._keys = {"ok": False, "error": "terminal send failed"}
+        built, _, path = self._tools(settings, tmp_path, stub)
+        explain_and_advance_turn(built)
+
+        result = json.loads(built.answer_dialog("dile que sí", BLOCKED_AGENT))
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "send-failed"
+        # The tool's JSON keeps its existing shape (the mux error rides
+        # the tool detail); the AUDIT line never does.
+        assert result["detail"] == "terminal send failed"
+        lines = self._lines(path)
+        assert len(lines) == 1
+        assert lines[0]["detail"] == {
+            "outcome": "refused", "reason": "send-failed", "spoken": True,
+        }
+        # The mux error text leaks nowhere on the trail.
+        assert "terminal send failed" not in path.read_text()
+
+    def test_refusal_inside_a_live_dialog_records_the_reason(
+        self, settings, tmp_path,
+    ):
+        built, stub, path = self._tools(settings, tmp_path)
+        explain_and_advance_turn(built)
+
+        result = json.loads(built.answer_dialog("selecciona la opción 5", BLOCKED_AGENT))
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "unknown-option"
+        assert stub.key_calls == []
+        lines = self._lines(path)
+        assert len(lines) == 1
+        assert lines[0]["detail"] == {
+            "outcome": "refused", "reason": "unknown-option", "spoken": True,
+        }
+
+    def test_terminations_before_a_live_dialog_record_nothing(
+        self, settings, tmp_path,
+    ):
+        built, stub, path = self._tools(settings, tmp_path)
+        built.begin_turn()
+        first = json.loads(built.answer_dialog("dile que sí", BLOCKED_AGENT))
+        assert first["outcome"] == "refused"
+        assert first["reason"] == "not-explained"
+
+        # A dialog that CHANGED since it was spoken: same boundary, the
+        # spoken binding no longer names a live dialog.
+        explain_and_advance_turn(built)
+        stub._dialog_screen = AMBIGUOUS_YES_DIALOG
+        second = json.loads(built.answer_dialog("selecciona la opción 2", BLOCKED_AGENT))
+        assert second["outcome"] == "refused"
+        assert second["reason"] == "changed"
+
+        assert self._lines(path) == []
+
+    def test_free_text_answer_records_the_bounded_typed_text(
+        self, settings, tmp_path,
+    ):
+        built, stub, path = self._tools(settings, tmp_path, VoiceFreeTextStub())
+        explain_claude_and_advance(built)
+
+        result = json.loads(built.answer_dialog(
+            "responde: usa la rama main", BLOCKED_CLAUDE,
+            option=3, text="usa la rama main",
+        ))
+
+        assert result["outcome"] == "answered"
+        assert stub.text_calls == [{"pane_id": "w1:p3", "text": "usa la rama main"}]
+        lines = self._lines(path)
+        assert len(lines) == 1
+        assert lines[0]["detail"] == {
+            "outcome": "answered", "option": 3,
+            "text": "usa la rama main", "spoken": True,
+        }
+
+    def test_multi_select_answer_records_the_spoken_set(self, settings, tmp_path):
+        built, stub, path = self._tools(
+            settings, tmp_path, VoiceMultiStub(checked={1})
+        )
+        explain_claude_and_advance(built)
+
+        result = json.loads(built.answer_dialog(
+            "marca la uno y la tres", BLOCKED_CLAUDE,
+            choices=["la uno", "la tres"],
+        ))
+
+        assert result["outcome"] == "answered"
+        lines = self._lines(path)
+        assert len(lines) == 1
+        assert lines[0]["detail"] == {
+            "outcome": "answered", "choices": [1, 3], "spoken": True,
+        }
+
+    def test_none_mode_redacts_content_but_keeps_the_verbal_marker(
+        self, settings, tmp_path,
+    ):
+        built, stub, path = self._tools(
+            settings, tmp_path, VoiceFreeTextStub(), content="none"
+        )
+        explain_claude_and_advance(built)
+
+        result = json.loads(built.answer_dialog(
+            "responde: usa la rama main", BLOCKED_CLAUDE,
+            option=3, text="usa la rama main",
+        ))
+
+        assert result["outcome"] == "answered"
+        lines = self._lines(path)
+        assert len(lines) == 1
+        detail = lines[0]["detail"]
+        assert detail["text"] == REDACTED  # typed content never rides "none"
+        assert detail["spoken"] is True    # the verbal marker is metadata
+        assert detail["outcome"] == "answered"
+        assert detail["option"] == 3
+
+    def test_attach_audit_is_optional(self, settings):
+        """Preservation: a tools instance without the seam behaves exactly
+        as before (the same hasattr convention as attach_hook_broker)."""
+        built = BrainTools(settings, herdr=DialogStub(), sleeper=lambda _s: None)
+        assert getattr(built, "_audit_log", None) is None
+        explain_and_advance_turn(built)
+        result = json.loads(built.answer_dialog("dile que sí", BLOCKED_AGENT))
+        assert result["outcome"] == "answered"
+
+
+class TestVoiceAnswerDeviceAttribution:
+    """T3-fu/U5: the authenticated /ask device rides the turn's voice
+    audit line. The device travels as a STRUCTURAL dispatch parameter
+    from the server boundary — never from model arguments — so the trail
+    says who spoke, and an unpaired turn keeps omitting the field."""
+
+    def _tools(self, settings, tmp_path, stub=None):
+        stub = stub if stub is not None else DialogStub()
+        built = BrainTools(settings, herdr=stub, sleeper=lambda _s: None)
+        path = tmp_path / "audit.log"
+        built.attach_audit(AuditLog(path))
+        return built, stub, path
+
+    def test_dispatched_answer_carries_the_device(self, settings, tmp_path):
+        built, stub, path = self._tools(settings, tmp_path)
+        explain_and_advance_turn(built)
+
+        result = json.loads(built.dispatch(
+            "answer_dialog", {"utterance": "dile que sí"},
+            target=BLOCKED_AGENT, device="phone",
+        ))
+
+        assert result["outcome"] == "answered"
+        lines = [json.loads(x) for x in path.read_text().splitlines()]
+        assert len(lines) == 1
+        assert lines[0]["device"] == "phone"   # envelope attribution field
+        assert lines[0]["detail"]["spoken"] is True
+
+    def test_dispatched_refusal_carries_the_device(self, settings, tmp_path):
+        built, stub, path = self._tools(settings, tmp_path)
+        explain_and_advance_turn(built)
+
+        result = json.loads(built.dispatch(
+            "answer_dialog", {"utterance": "selecciona la opción 5"},
+            target=BLOCKED_AGENT, device="phone",
+        ))
+
+        assert result["outcome"] == "refused"
+        lines = [json.loads(x) for x in path.read_text().splitlines()]
+        assert len(lines) == 1
+        assert lines[0]["device"] == "phone"
+        assert lines[0]["detail"]["reason"] == "unknown-option"
+
+    def test_turn_without_device_omits_the_field(self, settings, tmp_path):
+        built, stub, path = self._tools(settings, tmp_path)
+        explain_and_advance_turn(built)
+
+        result = json.loads(built.dispatch(
+            "answer_dialog", {"utterance": "dile que sí"}, target=BLOCKED_AGENT,
+        ))
+
+        assert result["outcome"] == "answered"
+        lines = [json.loads(x) for x in path.read_text().splitlines()]
+        assert len(lines) == 1
+        assert "device" not in lines[0]  # omitted, never null

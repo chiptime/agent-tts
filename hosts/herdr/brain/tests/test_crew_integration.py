@@ -519,3 +519,533 @@ class TestOutgoingClientCertificate:
         CrewGateway(state, secret_provider=lambda: "crew-secret-1").client_for("host-b")
 
         assert calls == [(None, None)]  # honest: the peer answers the uniform 401
+
+
+# ── peer audit trail (T3/S3): the owner brain records its own writes ────────
+
+
+class PeerAuditTools(CrewTools):
+    """CrewTools with the dialog surface and switchable write outcomes, so
+    the handler-level audit policy can be pinned for every tool outcome
+    the (status, payload) mapping knows."""
+
+    def __init__(self, reply_outcome="delivered", keys_outcome="sent",
+                 dialog_answer=None):
+        super().__init__()
+        self.reply_outcome = reply_outcome
+        self.keys_outcome = keys_outcome
+        self.dialog_answer = dialog_answer
+        self.dialog_calls: list = []
+
+    def reply_to_pane(self, pane_id, text):
+        self.replies.append((pane_id, text))
+        return {"outcome": self.reply_outcome, "pane_id": pane_id, "detail": ""}
+
+    def verified_reply_to_pane(self, pane_id, text, steer=False):
+        return self.reply_to_pane(pane_id, text)
+
+    def send_keys_to_pane(self, pane_id, keys):
+        self.key_sends.append((pane_id, keys))
+        return {"outcome": self.keys_outcome, "pane_id": pane_id, "detail": ""}
+
+    def answer_structured_dialog(self, pane_id, fingerprint, option=None,
+                                 choices=None, text=None, model_name=None,
+                                 provider_name=None):
+        self.dialog_calls.append({
+            "pane_id": pane_id, "fingerprint": fingerprint, "option": option,
+            "choices": choices, "text": text,
+        })
+        # Mirrors tools.answer_structured_dialog: refusals carry a reason,
+        # answers carry the resolved label.
+        result = dict(self.dialog_answer) if self.dialog_answer else {
+            "outcome": "answered", "label": "Sí",
+        }
+        result.update({"pane_id": pane_id, "option": option, "choices": choices})
+        return result
+
+
+class TestPeerAuditTrail:
+    """S3 on the peer surface: every crew write handler records exactly one
+    host-local audit line, refusals included, with `crew` marking the
+    channel and no `device` attribute (the crew link carries no paired
+    device bearer — the same convention _h_approval_action already uses).
+    Handler-level admission validation (blank text, empty keys) mirrors the
+    HTTP routes' pydantic body validation and records nothing."""
+
+    def _peer_app(self, tmp_path, monkeypatch, tools):
+        state = tmp_path / "state"
+        roster = CrewRoster.load(state, now=lambda: 1_000.0)
+        roster.join_as_peer(
+            "host-b", "host-a", "https://a.example:8747", LEAD_PEM,
+            "crew-secret-1", now=1.0,
+        )
+        roster.persist()
+        monkeypatch.setattr(server_module, "BrainTools", lambda cfg: tools)
+        settings = Settings(**{
+            **SETTINGS_KWARGS,
+            "state_dir": str(state), "audio_dir": str(tmp_path / "audio"),
+        })
+        gateway = CrewGateway(
+            state, secret_provider=lambda: "crew-secret-1",
+            transport_factory=lambda *a: StubTransport(), now=lambda: 1_000.0,
+        )
+        return create_app(settings=settings, crew=gateway), state
+
+    def _lines(self, state: Path) -> list:
+        path = state / "audit.log"
+        if not path.exists():
+            return []
+        return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+    def test_reply_records_one_crew_line_without_device(self, tmp_path, monkeypatch):
+        app, state = self._peer_app(tmp_path, monkeypatch, PeerAuditTools())
+        outcome = app.state.crew_handlers["reply"]("w1:p9", "sigue")
+
+        assert outcome == (200, {"ok": True, "pane_id": "w1:p9"})
+        lines = self._lines(state)
+        assert len(lines) == 1
+        line = lines[0]
+        assert line["action"] == "pane.reply"
+        assert line["pane_id"] == "w1:p9"
+        assert "device" not in line  # crew link carries no device identity
+        assert line["detail"] == {"outcome": "delivered", "text": "sigue", "crew": True}
+
+    @pytest.mark.parametrize("outcome,status", [
+        ("unknown_pane", 404), ("blocked", 409), ("error", 502),
+    ])
+    def test_reply_refusals_record_their_outcome(
+        self, tmp_path, monkeypatch, outcome, status
+    ):
+        app, state = self._peer_app(
+            tmp_path, monkeypatch, PeerAuditTools(reply_outcome=outcome)
+        )
+        result = app.state.crew_handlers["reply"]("w1:p9", "intenta igual")
+
+        assert result == (status, {"detail": result[1]["detail"]})
+        lines = self._lines(state)
+        assert len(lines) == 1
+        assert lines[0]["action"] == "pane.reply"
+        assert lines[0]["detail"] == {
+            "outcome": outcome, "text": "intenta igual", "crew": True,
+        }
+
+    def test_blank_reply_records_nothing(self, tmp_path, monkeypatch):
+        """Admission failure: mirrors the HTTP route's body validation, which
+        is unaudited today — the failed-attempt policy starts at the tool."""
+        app, state = self._peer_app(tmp_path, monkeypatch, PeerAuditTools())
+        assert app.state.crew_handlers["reply"]("w1:p9", "   ") == (
+            400, {"detail": "text is required"},
+        )
+        assert self._lines(state) == []
+
+    def test_keys_records_one_crew_line(self, tmp_path, monkeypatch):
+        app, state = self._peer_app(tmp_path, monkeypatch, PeerAuditTools())
+        result = app.state.crew_handlers["keys"]("w1:p9", ["enter"])
+
+        assert result == {"ok": True, "pane_id": "w1:p9"}
+        lines = self._lines(state)
+        assert len(lines) == 1
+        assert lines[0]["action"] == "pane.keys"
+        assert lines[0]["detail"] == {
+            "outcome": "sent", "keys": ["enter"], "crew": True,
+        }
+
+    def test_keys_failure_records_its_outcome(self, tmp_path, monkeypatch):
+        app, state = self._peer_app(
+            tmp_path, monkeypatch, PeerAuditTools(keys_outcome="error")
+        )
+        result = app.state.crew_handlers["keys"]("w1:p9", ["enter"])
+
+        assert result == (502, {"detail": "send-keys failed"})
+        lines = self._lines(state)
+        assert len(lines) == 1
+        assert lines[0]["detail"]["outcome"] == "error"
+
+    def test_empty_keys_record_nothing(self, tmp_path, monkeypatch):
+        app, state = self._peer_app(tmp_path, monkeypatch, PeerAuditTools())
+        assert app.state.crew_handlers["keys"]("w1:p9", []) == (
+            400, {"detail": "keys must be a non-empty array"},
+        )
+        assert self._lines(state) == []
+
+    def test_dialog_answer_records_the_answered_shape(self, tmp_path, monkeypatch):
+        app, state = self._peer_app(tmp_path, monkeypatch, PeerAuditTools())
+        result = app.state.crew_handlers["dialog_answer"](
+            "w1:p9", fingerprint="fp1", option=0,
+        )
+
+        assert result["ok"] is True
+        assert result["label"] == "Sí"
+        lines = self._lines(state)
+        assert len(lines) == 1
+        assert lines[0]["action"] == "pane.dialog.answer"
+        assert lines[0]["detail"] == {
+            "outcome": "answered", "reason": "", "option": 0,
+            "choices": None, "fingerprint": "fp1", "crew": True,
+        }
+
+    def test_dialog_answer_refusal_records_its_reason(
+        self, tmp_path, monkeypatch,
+    ):
+        app, state = self._peer_app(
+            tmp_path, monkeypatch,
+            PeerAuditTools(dialog_answer={"outcome": "refused", "reason": "changed"}),
+        )
+        result = app.state.crew_handlers["dialog_answer"](
+            "w1:p9", fingerprint="fp1", option=0,
+        )
+
+        assert result == (409, {"detail": "changed"})
+        lines = self._lines(state)
+        assert len(lines) == 1
+        assert lines[0]["detail"]["outcome"] == "refused"
+        assert lines[0]["detail"]["reason"] == "changed"
+
+
+class TestLeadCrewCallFailureAudit:
+    """T3-fu/U6: a failed proxied WRITE attempt records one `crew.call`
+    line on the lead (S3's failed-attempt policy), while successes keep
+    belonging to the routes' own crew:true lines and READ proxies record
+    nothing. The refusal detail is the peer's own HTTP error detail —
+    the same string the route already surfaces; unreachable failures
+    carry no transport text in the trail."""
+
+    def _lead_client(self, tmp_path, monkeypatch, transport):
+        state = tmp_path / "state"
+        write_lead_roster(state)
+        return make_client(
+            tmp_path, monkeypatch, crew=make_gateway(state, {"host-b": transport})
+        )
+
+    def _lines(self, tmp_path) -> list:
+        path = tmp_path / "state" / "audit.log"
+        if not path.exists():
+            return []
+        return [
+            json.loads(line)
+            for line in path.read_text().splitlines()
+            if line.strip()
+        ]
+
+    def test_unreachable_reply_records_one_crew_call_line(
+        self, tmp_path, monkeypatch,
+    ):
+        client = self._lead_client(tmp_path, monkeypatch, StubTransport(fail_all=True))
+        resp = client.post(
+            "/pane/reply", json={"pane_id": "host-b:w1:p1", "text": "sigue"}
+        )
+
+        assert resp.status_code == 503
+        lines = self._lines(tmp_path)
+        assert len(lines) == 1
+        line = lines[0]
+        assert line["action"] == "crew.call"
+        assert line["detail"]["peer"] == "host-b"
+        assert line["detail"]["op"] == "reply"
+        assert line["detail"]["outcome"] == "unreachable"
+        # No transport error text in the trail; no pane.reply line either.
+        assert "detail" not in line["detail"]
+
+    def test_refused_reply_records_the_peer_status_and_detail(
+        self, tmp_path, monkeypatch,
+    ):
+        client = self._lead_client(
+            tmp_path, monkeypatch,
+            StubTransport(responses={"/reply": (404, {"detail": "pane not found"})}),
+        )
+        resp = client.post(
+            "/pane/reply", json={"pane_id": "host-b:w1:p1", "text": "sigue"}
+        )
+
+        assert resp.status_code == 404
+        lines = self._lines(tmp_path)
+        assert len(lines) == 1
+        detail = lines[0]["detail"]
+        assert detail["peer"] == "host-b"
+        assert detail["op"] == "reply"
+        assert detail["outcome"] == "refused"
+        assert detail["status"] == 404
+        assert detail["detail"] == "pane not found"
+
+    def test_failed_keys_and_dialog_proxies_record_their_op(
+        self, tmp_path, monkeypatch,
+    ):
+        client = self._lead_client(tmp_path, monkeypatch, StubTransport(fail_all=True))
+        keys = client.post(
+            "/pane/keys", json={"pane_id": "host-b:w1:p1", "keys": ["enter"]}
+        )
+        dialog = client.post(
+            "/pane/dialog/answer",
+            json={"pane_id": "host-b:w1:p1", "fingerprint": "fp1", "option": 0},
+        )
+        assert keys.status_code == 503
+        assert dialog.status_code == 503
+
+        lines = self._lines(tmp_path)
+        assert [line["detail"]["op"] for line in lines] == ["keys", "dialog_answer"]
+        assert all(line["action"] == "crew.call" for line in lines)
+        assert all(line["detail"]["outcome"] == "unreachable" for line in lines)
+
+    def test_failed_read_proxies_record_nothing(self, tmp_path, monkeypatch):
+        client = self._lead_client(tmp_path, monkeypatch, StubTransport(fail_all=True))
+        resp = client.get("/view", params={"pane_id": "host-b:w1:p1"})
+
+        assert resp.status_code == 503
+        assert self._lines(tmp_path) == []  # reads are not write actions
+
+    def test_none_mode_keeps_peer_and_op_but_redacts_the_peer_detail(
+        self, tmp_path, monkeypatch,
+    ):
+        state = tmp_path / "state"
+        write_lead_roster(state)
+        monkeypatch.setattr(server_module, "BrainTools", lambda cfg: CrewTools())
+        settings = Settings(**{
+            **SETTINGS_KWARGS, "state_dir": str(state),
+            "audio_dir": str(tmp_path / "audio"), "audit_content": "none",
+        })
+        gateway = make_gateway(state, {"host-b": StubTransport(
+            responses={"/reply": (404, {"detail": "pane not found"})}
+        )})
+        app = create_app(settings=settings, crew=gateway)
+        client = TestClient(app)
+
+        assert client.post(
+            "/pane/reply", json={"pane_id": "host-b:w1:p1", "text": "sigue"}
+        ).status_code == 404
+        lines = self._lines(tmp_path)
+        assert len(lines) == 1
+        detail = lines[0]["detail"]
+        assert detail["peer"] == "host-b"        # attribution metadata
+        assert detail["op"] == "reply"           # operation enum metadata
+        assert detail["outcome"] == "refused"
+        assert detail["detail"] == "⟨redacted⟩"  # the peer message is content
+
+
+class TestCrewCallFailureOpsWarning:
+    """T3-fu/U6 (verification fix): the ops logger line is bounded and
+    metadata-only for EVERY failed write attempt — no transport text,
+    no tokens. The 503 response body already owns the full diagnostic."""
+
+    def _lead_client(self, tmp_path, monkeypatch, transport):
+        state = tmp_path / "state"
+        write_lead_roster(state)
+        return make_client(
+            tmp_path, monkeypatch, crew=make_gateway(state, {"host-b": transport})
+        )
+
+    def _warnings(self, caplog) -> list:
+        return [
+            record.getMessage()
+            for record in caplog.records
+            if record.name == "herdr_brain.server"
+            and record.getMessage().startswith("crew call failed:")
+        ]
+
+    def test_unreachable_warning_excludes_transport_text(
+        self, tmp_path, monkeypatch, caplog,
+    ):
+        client = self._lead_client(tmp_path, monkeypatch, StubTransport(fail_all=True))
+        with caplog.at_level("WARNING", logger="herdr_brain.server"):
+            response = client.post(
+                "/pane/reply", json={"pane_id": "host-b:w1:p1", "text": "sigue"}
+            )
+        assert response.status_code == 503
+        assert self._warnings(caplog) == [
+            "crew call failed: peer=host-b op=reply outcome=unreachable status=None"
+        ]
+        assert "peer is down" not in self._warnings(caplog)[0]
+
+    def test_refused_warning_is_metadata_only(
+        self, tmp_path, monkeypatch, caplog,
+    ):
+        client = self._lead_client(
+            tmp_path, monkeypatch,
+            StubTransport(responses={"/reply": (404, {"detail": "pane not found"})}),
+        )
+        with caplog.at_level("WARNING", logger="herdr_brain.server"):
+            response = client.post(
+                "/pane/reply", json={"pane_id": "host-b:w1:p1", "text": "sigue"}
+            )
+        assert response.status_code == 404
+        assert self._warnings(caplog) == [
+            "crew call failed: peer=host-b op=reply outcome=refused status=404"
+        ]
+
+    def test_failed_reads_never_warn_or_record(
+        self, tmp_path, monkeypatch, caplog,
+    ):
+        client = self._lead_client(tmp_path, monkeypatch, StubTransport(fail_all=True))
+        with caplog.at_level("WARNING", logger="herdr_brain.server"):
+            response = client.get("/view", params={"pane_id": "host-b:w1:p1"})
+        assert response.status_code == 503
+        assert self._warnings(caplog) == []
+        assert not (tmp_path / "state" / "audit.log").exists()
+
+
+class TestRemoteGateForwardFailureAudit:
+    """T3-fu2/U7: the ONE forward failure mode that returns no answer —
+    a transport raise from the owner — records the same failed-attempt
+    line every crew write uses (crew.call, op=gate_forward) and maps to
+    the same 503 crew_call does. Refusals that RETURN (the raw
+    approval_resolve contract: a 404 for a dead gate is an ANSWER) keep
+    their single existing approval.forward line — recording crew.call
+    for them would duplicate on the same trail."""
+
+    def _lead_with_gate(self, tmp_path, monkeypatch, transport):
+        state = tmp_path / "state"
+        write_lead_roster(state)
+        client = make_client(
+            tmp_path, monkeypatch, crew=make_gateway(state, {"host-b": transport})
+        )
+        return client, transport
+
+    def _lines(self, tmp_path) -> list:
+        path = tmp_path / "state" / "audit.log"
+        if not path.exists():
+            return []
+        return [
+            json.loads(line)
+            for line in path.read_text().splitlines()
+            if line.strip()
+        ]
+
+    def _learn_remote_gate(self, client):
+        # The herd/approval-current probe teaches the index the owner.
+        approval = client.get("/approval/current").json()["approval"]
+        assert approval is not None and approval["host"] == "host-b"
+
+    def test_unreachable_forward_records_one_crew_call_line(
+        self, tmp_path, monkeypatch,
+    ):
+        class FailAction(StubTransport):
+            def request(self, method, url, **kwargs):
+                if method == "POST" and "/action" in url:
+                    raise OSError("peer is down")
+                return super().request(method, url, **kwargs)
+
+        client, _ = self._lead_with_gate(
+            tmp_path, monkeypatch,
+            FailAction(responses={
+                "/crew/v1/approval/current": (200, {"approval": {
+                    "gate_id": "g-remote-1", "state": "proposed",
+                    "question": "¿Envío?",
+                }}),
+            }),
+        )
+        self._learn_remote_gate(client)
+
+        resp = client.post("/approval/g-remote-1/approve")
+
+        assert resp.status_code == 503
+        lines = self._lines(tmp_path)
+        assert len(lines) == 1
+        line = lines[0]
+        assert line["action"] == "crew.call"
+        assert line["detail"] == {
+            "peer": "host-b", "op": "gate_forward", "outcome": "unreachable",
+            "gate_id": "g-remote-1", "decision": "approve",
+        }
+        # No transport text; no approval.forward line for this attempt.
+        assert "peer is down" not in json.dumps(line)
+
+    def test_unreachable_reject_route_records_the_decision(
+        self, tmp_path, monkeypatch,
+    ):
+        class FailAction(StubTransport):
+            def request(self, method, url, **kwargs):
+                if method == "POST" and "/action" in url:
+                    raise OSError("peer is down")
+                return super().request(method, url, **kwargs)
+
+        client, _ = self._lead_with_gate(
+            tmp_path, monkeypatch,
+            FailAction(responses={
+                "/crew/v1/approval/current": (200, {"approval": {
+                    "gate_id": "g-remote-2", "state": "proposed",
+                    "question": "¿Envío?",
+                }}),
+            }),
+        )
+        self._learn_remote_gate(client)
+
+        resp = client.post("/approval/g-remote-2/reject")
+
+        assert resp.status_code == 503
+        lines = self._lines(tmp_path)
+        assert len(lines) == 1
+        assert lines[0]["detail"]["decision"] == "reject"
+
+    def test_refused_forward_keeps_its_single_existing_line(
+        self, tmp_path, monkeypatch,
+    ):
+        client, _ = self._lead_with_gate(
+            tmp_path, monkeypatch,
+            StubTransport(responses={
+                "/crew/v1/approval/current": (200, {"approval": {
+                    "gate_id": "g-remote-3", "state": "proposed",
+                    "question": "¿Envío?",
+                }}),
+                "/crew/v1/approval/g-remote-3/action": (
+                    404, {"detail": "gate dead"}
+                ),
+            }),
+        )
+        self._learn_remote_gate(client)
+
+        resp = client.post("/approval/g-remote-3/approve")
+
+        assert resp.status_code == 404
+        lines = self._lines(tmp_path)
+        # Exactly ONE line: the route's own approval.forward. A crew.call
+        # line here would duplicate the same trail entry.
+        assert len(lines) == 1
+        assert lines[0]["action"] == "approval.forward"
+        assert "crew.call" not in json.dumps(lines)
+
+
+def test_ntfy_forward_failure_is_audited_and_warns_without_transport_text(
+    tmp_path, monkeypatch, caplog,
+):
+    class FailAction(StubTransport):
+        def request(self, method, url, **kwargs):
+            if method == "POST" and "/action" in url:
+                raise OSError("peer is down SECRET_TRANSPORT")
+            return super().request(method, url, **kwargs)
+
+    state = tmp_path / "state"
+    write_lead_roster(state)
+    transport = FailAction(responses={
+        "/crew/v1/approval/current": (200, {"approval": {
+            "gate_id": "g-probe", "state": "proposed", "question": "hello",
+        }}),
+    })
+    client = make_client(
+        tmp_path, monkeypatch, crew=make_gateway(state, {"host-b": transport})
+    )
+    assert client.get("/approval/current").json()["approval"]["host"] == "host-b"
+    caplog.clear()
+
+    response = client.post("/approval/g-probe/action", content="approve")
+
+    assert response.status_code == 503
+    lines = [
+        json.loads(line)
+        for line in (state / "audit.log").read_text().splitlines()
+    ]
+    assert len(lines) == 1
+    assert lines[0]["action"] == "crew.call"
+    assert "device" not in lines[0]
+    assert lines[0]["detail"] == {
+        "peer": "host-b", "op": "gate_forward", "outcome": "unreachable",
+        "gate_id": "g-probe", "decision": "approve",
+    }
+    assert "SECRET_TRANSPORT" not in json.dumps(lines)
+    warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith("crew call failed:")
+    ]
+    assert warnings == [
+        "crew call failed: peer=host-b op=gate_forward "
+        "outcome=unreachable status=None"
+    ]

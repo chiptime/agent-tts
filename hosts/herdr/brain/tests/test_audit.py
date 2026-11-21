@@ -243,3 +243,24 @@ def test_failed_rotation_does_not_lose_the_line(tmp_path):
     lines = path.read_text(encoding="utf-8").splitlines()
     assert [json.loads(l)["detail"]["i"] for l in lines] == [0, 1, 2]
     assert (state / "audit.log.1").is_dir()  # the blocker is untouched
+
+
+# ── T3/S3: attribution survives redaction ─────────────────────────────────────
+
+
+def test_by_is_attribution_metadata_that_survives_none():
+    from herdr_brain.audit import METADATA_KEYS
+
+    assert "by" in METADATA_KEYS
+    line = format_audit_line(
+        {
+            "action": "hook.permission.answer",
+            "detail": {"decision": "allow", "by": "voice", "tool_name": "Bash"},
+        },
+        FIXED_NOW,
+        content="none",
+    )
+    detail = json.loads(line)["detail"]
+    assert detail["by"] == "voice"          # attribution, not content
+    assert detail["decision"] == "allow"    # already allowlisted
+    assert detail["tool_name"] == REDACTED  # unlisted names still redact
