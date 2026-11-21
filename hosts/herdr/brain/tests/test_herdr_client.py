@@ -402,8 +402,10 @@ class TestOaLaunchComposition:
         subcommands = [tuple(c["cmd"][1:3]) for c in runner.calls]
         assert ("agent", "wait") not in subcommands
         assert ("agent", "prompt") not in subcommands
-        # Poll cadence pinned: 27 checks over 26 interval-sleeps ≈ 40s.
-        assert subcommands.count(("agent", "list")) == 27
+        # Poll cadence pinned: 27 checks over 26 interval-sleeps ≈ 40s,
+        # plus the ONE failure-path list_agents probe that refines the
+        # keep-and-communicate reason (parity S4: never auto-close).
+        assert subcommands.count(("agent", "list")) == 28
         assert len(fake.sleeps) == 26
 
     def test_opencode_wait_failure_is_tolerated(self):
