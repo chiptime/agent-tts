@@ -120,7 +120,7 @@ class UnsupportedStopTools:
     def __init__(self, cfg):
         type(self).stops = []
 
-    def stop_pane(self, pane_id):
+    def stop_pane(self, pane_id, text_hint="", line_hint=""):
         type(self).stops.append(pane_id)
         return dict(type(self).stop_outcome, pane_id=pane_id)
 

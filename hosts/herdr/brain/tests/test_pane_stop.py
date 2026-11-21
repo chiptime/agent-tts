@@ -32,7 +32,10 @@ STOP_AGENT = "stop_agent"
 
 
 class FakeStopTools(FakeTools):
-    """Server double: replies deliver, stops succeed, both recorded."""
+    """Server double: replies deliver, stops succeed, both recorded.
+
+    ``stop_pane`` takes the S2 draft hint like the real tool (the route
+    passes the actionable receipt's tail, defaulting to none)."""
 
     stops: list = []
     stop_outcome = {"outcome": "stopped", "keys": ["esc"], "detail": ""}
@@ -45,7 +48,7 @@ class FakeStopTools(FakeTools):
             "receipt": {"outcome": "effective", "detail": "", "text_hint": ""},
         }
 
-    def stop_pane(self, pane_id):
+    def stop_pane(self, pane_id, text_hint="", line_hint=""):
         type(self).stops.append(pane_id)
         return dict(type(self).stop_outcome, pane_id=pane_id)
 
@@ -228,3 +231,60 @@ def test_receipts_listing_is_gated_as_a_read(tmp_path, monkeypatch):
 
     auth = {"Authorization": f"Bearer {outcome['token']}"}
     assert client.get("/pane/receipts", headers=auth).status_code == 200
+
+
+# ── S2: the HTTP stop surface stays fail-closed on every outcome ──────────────
+
+
+@pytest.mark.parametrize(
+    "stop_outcome", ["dialog_open", "idle", "unverified", "unknown"]
+)
+def test_stop_outcomes_without_evidence_never_succeed(tmp_path, monkeypatch, stop_outcome):
+    """S2: «nunca se comunica éxito sin evidencia suficiente» — only a
+    verified ``stopped`` may answer 200; every other outcome rides the
+    route's fail-closed branch with its own truthful detail."""
+    FakeStopTools.stop_outcome = {
+        "outcome": stop_outcome, "keys": [], "detail": "la razón",
+    }
+    client = _stop_client(tmp_path, monkeypatch)
+    resp = client.post("/pane/stop", json={"pane_id": "w1:p2"})
+    assert resp.status_code in (404, 422, 502)
+    assert resp.status_code != 200
+    body = resp.json()
+    assert "la razón" in body["detail"]
+
+
+def test_the_stop_replay_names_every_outcome_truthfully(tmp_path, monkeypatch):
+    """The voice approval replay must give the model the whole outcome
+    vocabulary: dialog_open and idle are NOT a stopped turn, and
+    unverified/unknown are NOT confirmed either."""
+    from tests.test_server import FakeLLM
+
+    FakeStopTools.stop_outcome = {
+        "outcome": "unverified", "keys": ["esc"], "detail": "seguía escribiendo",
+    }
+    FakeStopTools.stops = []
+    monkeypatch.setattr(server_module, "BrainTools", FakeStopTools)
+    cfg = Settings(**{
+        **SETTINGS_KWARGS,
+        "audio_dir": str(tmp_path / "audio"),
+        "state_dir": str(tmp_path / "state"),
+    })
+    llm = FakeLLM(result={
+        "answer": "No pude confirmar la parada.",
+        "pane_id": "w1:p2", "agent": "claude", "session_id": "default",
+    })
+    app = server_module.create_app(settings=cfg, llm_factory=lambda c, t: llm)
+    client = TestClient(app, base_url=LOOPBACK)
+    gate = app.state.approval_store.propose(
+        "default", text="", pane_id="w1:p2", agent="claude", tool=STOP_AGENT
+    )
+    resp = client.post(f"/approval/{gate.gate_id}/approve")
+    assert resp.status_code == 200
+    assert FakeStopTools.stops == ["w1:p2"]
+    report = llm.calls[0]
+    assert "unverified" in report
+    assert "seguía escribiendo" in report
+    assert "Only 'stopped' means the turn was interrupted" in report
+    assert "dialog_open" in report
+    assert "idle" in report

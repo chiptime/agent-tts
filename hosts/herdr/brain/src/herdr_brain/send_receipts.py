@@ -130,6 +130,80 @@ def discard_recipe(agent_kind: str) -> Tuple[str, ...]:
     return DISCARD_RECIPES.get(agent_kind or "", ("esc",))
 
 
+# ── stop truthfulness (S2) ────────────────────────────────────────────────────
+#
+# A stop attempt reports the CLOSED set below. ``stopped`` is claimed ONLY on
+# evidence that the pane left its running state — the keys having been sent
+# is never evidence (the audited defect this table exists to fix: the old
+# path returned ``stopped`` straight after ``send_keys``). The pane state is
+# the mux's own report, the same authority the reply route trusts for its
+# dialog contract; what the state values mean lives in herdr
+# (``herdr agent wait``: idle|working|blocked|done|unknown).
+
+STOP_OUTCOMES = (
+    "stopped",
+    "dialog_open",
+    "idle",
+    "unverified",
+    "unknown",
+    "error",
+    "unknown_pane",
+    "unsupported_harness",
+)
+
+#: State values that mean a turn is running — the only state the interrupt
+#: recipes are evidence-backed for.
+STOP_RUNNING_STATUSES = frozenset({"working"})
+
+#: State values that mean no turn is running. ``blocked`` (waiting at a
+#: dialog) is refused BEFORE the running check: an interrupt recipe is for a
+#: turn, never for a dialog question.
+STOP_ENDED_STATUSES = frozenset({"idle", "done", "blocked"})
+
+#: Post-interrupt states that EVIDENCE the turn ended (S2, correction):
+#: the running turn is gone for good. ``blocked`` is deliberately NOT
+#: here — a dialog can be a mid-turn permission pause the agent RESUMES
+#: once answered, so opening a dialog never proves the turn finalized.
+STOP_CONFIRMED_AFTER = frozenset({"idle", "done"})
+
+#: How long a confirmed stop may take to show in the pane state (the same
+#: envelope a verified reply waits).
+VERIFIED_STOP_WAIT_MS = 3_000
+
+
+def classify_stop(
+    status_before: str, status_after: Optional[str]
+) -> Tuple[str, str]:
+    """One stop outcome from state evidence, fail-closed (S2).
+
+    ``stopped`` needs the pane to have LEFT its running state for a
+    state that evidences the turn ENDED (idle/done) after the interrupt
+    keys — the sent keys alone never are evidence, and neither is a
+    dialog opening (it may pause the turn instead of ending it). A
+    post-interrupt ``blocked`` is therefore ``unknown``: the dialog may
+    be the stop flow or a mid-turn permission the agent will resume.
+    Still running → ``unverified``; unreadable or unrecognized →
+    ``unknown``. Nothing here can return ``stopped`` without the
+    transition to a turn-ending state.
+    """
+    if status_after is None:
+        return ("unknown", "no se pudo leer el estado del agente tras la interrupción")
+    if status_before in STOP_RUNNING_STATUSES and status_after in STOP_CONFIRMED_AFTER:
+        return ("stopped", "el agente dejó su turno en curso tras la interrupción")
+    if status_after == "blocked":
+        return (
+            "unknown",
+            "el agente quedó en un diálogo tras la interrupción; no se confirmó "
+            "que el turno terminará",
+        )
+    if status_after in STOP_RUNNING_STATUSES or status_after in STOP_ENDED_STATUSES:
+        return (
+            "unverified",
+            "el agente siguió en su turno tras la interrupción; no se confirmó la parada",
+        )
+    return ("unknown", "estado del agente no reconocido tras la interrupción")
+
+
 # ── input-line evidence ───────────────────────────────────────────────────────
 
 
@@ -261,14 +335,25 @@ class SendReceiptStore:
         outcome: str,
         detail: str = "",
         text_hint: str = "",
+        line_hint: str = "",
     ) -> dict:
-        """Appends one receipt (masked: a detail may echo screen text)."""
+        """Appends one receipt (masked: a detail or line hint may echo
+        screen text).
+
+        ``line_hint`` (S2, correction): the EXACT masked input line the
+        classifier saw when the text stayed typed — the unambiguous
+        binding every submit/discard/stop follow-up revalidates before
+        its key. A substring tail alone matches dialog options and
+        replaced drafts; the exact line does not. Empty when the
+        outcome never saw an input line.
+        """
         receipt = {
             "id": self._ids(),
             "pane_id": pane_id,
             "outcome": outcome,
             "detail": mask_text(detail or ""),
             "text_hint": mask_text((text_hint or "")[-ECHO_TAIL_CHARS:]),
+            "line_hint": mask_text(line_hint or ""),
             "created_at": self._clock(),
             "resolved_at": None,
         }

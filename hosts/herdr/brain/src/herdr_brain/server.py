@@ -2601,7 +2601,11 @@ def create_app(
             + (f" ({stopped['detail']})" if stopped.get("detail") else "")
             + ".\n\nReport the outcome to the user in one or two short "
             "spoken sentences. Only 'stopped' means the turn was "
-            "interrupted; anything else means it was NOT — say that."
+            "interrupted; anything else means it was NOT — say that. "
+            "'dialog_open' says the agent was waiting at a dialog, "
+            "'idle' says there was no running turn at all, and "
+            "'unverified'/'unknown' say the stop was not confirmed — "
+            "report exactly what the outcome says."
         )
         try:
             result = get_llm().ask(
@@ -3214,6 +3218,7 @@ def create_app(
                 receipt_fields["outcome"],
                 detail=receipt_fields["detail"],
                 text_hint=receipt_fields["text_hint"],
+                line_hint=receipt_fields.get("line_hint", ""),
             )
         if receipt is not None and receipt["outcome"] in TRACKED_OUTCOMES:
             # parity-f7g S1: one tracker per receipt follows the send to
@@ -3375,7 +3380,9 @@ def create_app(
         ``typed_not_submitted`` (re-offerable) when it did not.
         """
         receipt = _live_typed_receipt_or_error(receipt_id)
-        result = tools.submit_typed_text(receipt["pane_id"], receipt["text_hint"])
+        result = tools.submit_typed_text(
+            receipt["pane_id"], receipt["text_hint"], receipt.get("line_hint", "")
+        )
         return _resolve_receipt_and_audit(request, "pane.receipt.submit", receipt, result)
 
     @app.post("/pane/receipt/{receipt_id}/discard")
@@ -3388,12 +3395,14 @@ def create_app(
         clean; a surviving echo keeps it ``typed_not_submitted``.
         """
         receipt = _live_typed_receipt_or_error(receipt_id)
-        result = tools.discard_typed_text(receipt["pane_id"], "", receipt["text_hint"])
+        result = tools.discard_typed_text(
+            receipt["pane_id"], "", receipt["text_hint"], receipt.get("line_hint", "")
+        )
         return _resolve_receipt_and_audit(request, "pane.receipt.discard", receipt, result)
 
     @app.post("/pane/stop")
     def pane_stop(request: Request, body: PaneStopRequest) -> dict:
-        """Interrupts one pane's RUNNING turn (S12).
+        """Interrupts one pane's RUNNING turn (S12, S2).
 
         The interrupt key comes from the per-harness table (``esc`` for
         the claude/codex/opencode chat TUIs); a harness outside it is a
@@ -3401,8 +3410,23 @@ def create_app(
         cannot reason about. Exact pane as everywhere (unknown = 404,
         never the focused fallback), keys ride the closed allowlist, and
         every attempt is audited.
+
+        S2: the outcome is evidence, not the sent keys — the tools
+        verdict checks the pane's state before the keys and the pane
+        leaving its running state after them, so only a verified stop
+        answers ``stopped``; every other outcome (dialog open, nothing
+        running, unverified, unknown) rides the fail-closed branch below
+        with its own truthful detail. When the store holds an
+        actionable draft receipt for the pane, its masked text hint
+        rides along so the stop can report whether that draft survived.
         """
-        result = tools.stop_pane(body.pane_id)
+        drafts = [
+            r for r in receipt_store.list(body.pane_id)
+            if r["outcome"] == "typed_not_submitted"
+        ]
+        draft_hint = drafts[0]["text_hint"] if drafts else ""
+        draft_line = drafts[0].get("line_hint", "") if drafts else ""
+        result = tools.stop_pane(body.pane_id, draft_hint, draft_line)
         outcome = result["outcome"]
         audit_log.record({
             "action": "pane.stop",
