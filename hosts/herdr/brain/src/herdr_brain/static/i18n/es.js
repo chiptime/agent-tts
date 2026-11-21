@@ -249,6 +249,7 @@
     "newsession.resume_failed": "No se pudo reanudar la sesión — prueba otra vez",
     "newsession.err_resume_harness": "Ese agente no tiene forma de retomar verificada",
     "newsession.err_resume_cwd": "Esa sesión no tiene una carpeta conocida para reabrirla",
+    "newsession.err_resume_workspace": "El espacio elegido ya no está disponible — elige otro",
 
     /* ---- pending sheet ---- */
     "pendsheet.aria": "Pendientes",

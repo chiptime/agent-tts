@@ -56,6 +56,8 @@ class CreateStub(StubHerdr):
         fail_run=False,
         fail_wait=False,
         detect_after=None,
+        fail_list=False,
+        extra_agents=None,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -65,7 +67,16 @@ class CreateStub(StubHerdr):
         self._fail_run = fail_run
         self._fail_wait = fail_wait
         self._detect_after = detect_after
+        self._fail_list = fail_list
+        self._extra_agents = list(extra_agents or [])
         self._list_calls = 0
+        self.list_calls_total = 0
+        # S4 stub realism: only a SUCCESSFULLY typed launch command can
+        # ever surface an agent on the new pane; a failed `pane run`
+        # typed nothing, so probes see an empty pane. (A real CLI
+        # timeout could still have submitted the line — the production
+        # code must never treat that failure as proof either way.)
+        self.pane_run_ok = False
         self.tab_calls: list = []
         self.start_calls: list = []
         self.pane_run_calls: list = []
@@ -89,6 +100,7 @@ class CreateStub(StubHerdr):
         self.pane_run_calls.append({"pane_id": pane_id, "command": command})
         if self._fail_run:
             raise HerdrError("run boom")
+        self.pane_run_ok = True
 
     def agent_wait(self, pane_id, until="idle", timeout_ms=OPENCODE_WAIT_TIMEOUT_MS):
         self.agent_wait_calls.append(
@@ -98,10 +110,15 @@ class CreateStub(StubHerdr):
             raise HerdrError("wait boom")
 
     def list_agents(self):
+        self.list_calls_total += 1
+        if self._fail_list:
+            raise HerdrError("list boom")
         agents = list(super().list_agents())
-        if not self.pane_run_calls:
-            # Before `oa` is typed the pane runs no agent: listings keep
-            # the base herd, exactly like the pre-create world.
+        agents.extend(self._extra_agents)
+        if not self.pane_run_calls or not self.pane_run_ok:
+            # Before `oa` is typed (or when typing FAILED) the pane runs
+            # no agent: listings keep the base herd, exactly like the
+            # pre-create world.
             return agents
         self._list_calls += 1
         if self._detect_after is None or self._list_calls > self._detect_after:
@@ -224,28 +241,33 @@ class TestCreateSession:
         assert stub._list_calls == 3
         assert fake_clock.sleeps == [OPENCODE_POLL_INTERVAL_S] * 2
 
-    def test_readiness_exhaustion_fails_with_ids(self, settings, stub, fake_clock):
+    def test_readiness_exhaustion_keeps_the_inflight_tab(self, settings, stub, fake_clock):
         stub._detect_after = 10_000  # never appears within the budget
         tools = make_tools(settings, stub, fake_clock)
         out = tools.create_session("opencode", "Build", "task")
+        # S4: the launch command WAS typed on this pane, so no probe can
+        # prove the pane empty — the tab is kept and NAMED, never killed.
         assert out == (
             f"error launching opencode: no agent appeared on pane {NEW_PANE} "
             f"within {OPENCODE_READY_BUDGET_S:.0f}s "
-            f"(tab {NEW_TAB} pane {NEW_PANE} were created)"
+            f"(tab {NEW_TAB} pane {NEW_PANE} were created and kept: a failed "
+            "launch may still come up — close the tab manually if no agent appears)"
         )
         assert stub.prompt_calls == []
         assert stub.agent_wait_calls == []
         # Bounded loop: ~40s budget at 1.5s cadence, no real sleeping.
         assert len(fake_clock.sleeps) == 26
+        # Nothing is typed into a pane whose launch may still land.
+        assert stub.pane_run_calls == [{"pane_id": NEW_PANE, "command": "oa"}]
 
     def test_pane_run_failure_reports_ids(self, settings, stub, fake_clock):
         stub._fail_run = True
         tools = make_tools(settings, stub, fake_clock)
         out = tools.create_session("opencode", "Build")
-        assert out == (
-            f"error launching opencode: run boom "
-            f"(tab {NEW_TAB} pane {NEW_PANE} were created)"
-        )
+        assert out.startswith("error launching opencode: run boom")
+        # The ids ride the error either way (closed or kept — exact
+        # message pinned by TestLaunchFailureCleanup).
+        assert NEW_TAB in out and NEW_PANE in out
         assert stub.agent_wait_calls == []
         assert stub.prompt_calls == []
 
@@ -286,17 +308,109 @@ class TestCreateSession:
         assert stub.pane_run_calls == []
         assert stub.start_calls == []
 
-    def test_start_failure_keeps_tab_id(self, settings, stub, fake_clock):
+    def test_start_failure_keeps_the_tab_named(self, settings, stub, fake_clock):
         stub._fail_start = True
         tools = make_tools(settings, stub, fake_clock)
         out = tools.create_session("claude", "Build")
-        assert out == "error starting agent: start boom (tab w2:t7 was created)"
+        # S4: a failed start cannot be ruled out (the CLI may have
+        # spawned the agent and lost the ack), so the tab is KEPT and
+        # NAMED — never auto-closed.
+        assert out == (
+            "error starting agent: start boom "
+            f"(tab {NEW_TAB} pane {NEW_PANE} were created and kept: a failed "
+            "launch may still come up — close the tab manually if no agent appears)"
+        )
+        assert stub.list_calls_total >= 1  # the probe refined the reason
+        assert stub.pane_run_calls == []   # nothing is typed into a kept pane
 
     def test_requires_kind_and_title(self, settings, stub, fake_clock):
         tools = make_tools(settings, stub, fake_clock)
         assert tools.create_session("", "T") == "error: agent_kind and title are required"
         assert tools.create_session("opencode", "  ") == "error: agent_kind and title are required"
         assert stub.tab_calls == []
+
+
+class TestLaunchFailureCleanup:
+    """S4: a failed launch NEVER abandons — or kills — the tab it created.
+
+    The pane came from this operation's own ``create_tab``, so the error
+    always names its identity. It is never auto-closed: a CLI failure
+    (a timeout in particular) does not prove the command was never
+    typed, an agent can register after any listing, and a malformed
+    listing can look empty — so a fresh :meth:`list_agents` probe only
+    refines the REPORTED reason (agent live / unverified / nothing
+    verifiable yet) and closing stays the operator's named decision.
+    """
+
+    AGENT_ON_NEW_PANE = AgentInfo(
+        pane_id=NEW_PANE,
+        agent="claude",
+        status="idle",
+        session_kind="",
+        session_value="",
+        cwd="",
+        title="",
+        focused=False,
+    )
+
+    def test_start_failure_with_a_live_agent_keeps_the_tab_named(
+        self, settings, make_stub, fake_clock
+    ):
+        stub = CreateStub(
+            fail_start=True,
+            extra_agents=[self.AGENT_ON_NEW_PANE],
+            agents=make_stub()._agents,
+        )
+        tools = make_tools(settings, stub, fake_clock)
+        out = tools.create_session("claude", "Build")
+        assert out == (
+            "error starting agent: start boom "
+            f"(tab {NEW_TAB} pane {NEW_PANE} were created and kept: "
+            "an agent is live on the pane)"
+        )
+        # Nothing is typed into a pane that holds live agent work.
+        assert stub.pane_run_calls == []
+
+    def test_start_failure_with_a_failed_probe_keeps_the_tab(
+        self, settings, make_stub, fake_clock
+    ):
+        stub = CreateStub(fail_start=True, fail_list=True, agents=make_stub()._agents)
+        tools = make_tools(settings, stub, fake_clock)
+        out = tools.create_session("claude", "Build")
+        assert out == (
+            "error starting agent: start boom "
+            f"(tab {NEW_TAB} pane {NEW_PANE} were created and kept: "
+            "the pane could not be verified empty)"
+        )
+        assert stub.pane_run_calls == []
+
+    def test_a_failed_oa_never_closes_the_tab(self, settings, make_stub, fake_clock):
+        # Covers ANY `pane run` failure — including a timeout that may
+        # have submitted the command: the tab is kept, `exit` is never
+        # typed, and the error names the identity and the reason.
+        stub = CreateStub(fail_run=True, agents=make_stub()._agents)
+        tools = make_tools(settings, stub, fake_clock)
+        out = tools.create_session("opencode", "Build")
+        assert out == (
+            "error launching opencode: run boom "
+            f"(tab {NEW_TAB} pane {NEW_PANE} were created and kept: a failed "
+            "launch may still come up — close the tab manually if no agent appears)"
+        )
+        # The failed `oa` attempt, and NOTHING else (no cleanup typing).
+        assert stub.pane_run_calls == [{"pane_id": NEW_PANE, "command": "oa"}]
+
+    def test_undelivered_oa_with_a_failed_probe_keeps_the_tab(
+        self, settings, make_stub, fake_clock
+    ):
+        stub = CreateStub(fail_run=True, fail_list=True, agents=make_stub()._agents)
+        tools = make_tools(settings, stub, fake_clock)
+        out = tools.create_session("opencode", "Build")
+        assert out == (
+            "error launching opencode: run boom "
+            f"(tab {NEW_TAB} pane {NEW_PANE} were created and kept: "
+            "the pane could not be verified empty)"
+        )
+        assert stub.pane_run_calls == [{"pane_id": NEW_PANE, "command": "oa"}]
 
 
 class TestDispatch:

@@ -142,6 +142,45 @@ test("a missing or throwing randomUUID falls back to time+random", () => {
   );
 });
 
+/* ---- resumeRequestId: same-operation retry reuses the id (S4, doc 14) ---- */
+
+test("a retry of the same resume operation reuses its request id", () => {
+  let n = 0;
+  const uuid = () => "u" + ++n;
+  const first = model.resumeRequestId(null, "abc-123", uuid, 1000, 0.5);
+  assert.equal(first.reused, false);
+  assert.equal(first.request_id, "u1");
+  const again = model.resumeRequestId(first.retry, "abc-123", uuid, 2000, 0.25);
+  assert.deepEqual(again, { request_id: "u1", retry: first.retry, reused: true });
+});
+
+test("a different session or a cleared retry starts a NEW explicit operation", () => {
+  let n = 0;
+  const uuid = () => "u" + (++n);
+  const prior = { session_id: "abc-123", request_id: "held-elsewhere" };
+  const other = model.resumeRequestId(prior, "def-456", uuid, 1000, 0.5);
+  assert.equal(other.reused, false);
+  assert.equal(other.request_id, "u1");
+  assert.deepEqual(other.retry, { session_id: "def-456", request_id: "u1" });
+  const cleared = model.resumeRequestId(null, "abc-123", uuid, 1000, 0.5);
+  assert.equal(cleared.reused, false);
+  assert.equal(cleared.request_id, "u2");
+  assert.deepEqual(cleared.retry, { session_id: "abc-123", request_id: "u2" });
+});
+
+test("a malformed retry entry never freezes the id", () => {
+  for (const state of [
+    null, undefined, 7, {},
+    { session_id: "abc" },
+    { session_id: "abc-123", request_id: "" },
+    { session_id: "abc-123", request_id: 7 },
+  ]) {
+    const op = model.resumeRequestId(state, "abc-123", null, 1000, 0.5);
+    assert.equal(op.reused, false);
+    assert.equal(op.request_id, "ns-rs-i");
+  }
+});
+
 /* ---- resumeRows: the "Retomar" list (parity-f7c S3) ---- */
 
 test("resume rows keep well-formed sessions and drop malformed ones", () => {
@@ -222,7 +261,7 @@ test("launcher shortcuts ride the dock functions, never a duplicate flow", () =>
   assert.ok(appSrc.includes('"/operator/launch"'));
 });
 
-/* ---- resume wiring pins (parity-f7c S3) ---- */
+/* ---- resume wiring pins (parity-f7c S3 + parity T4/S4) ---- */
 
 test("the resume list fetches /sessions/recent through the read path", () => {
   assert.ok(/readFetch\("\/sessions\/recent\?harness="\s*\+/.test(appSrc),
@@ -234,10 +273,38 @@ test("a resume tap posts /session/resume through withDeviceAuth", () => {
     "the resume must ride withDeviceAuth like every write");
 });
 
-test("each resume tap mints its own request id", () => {
-  assert.ok(/request_id:\s*nsModel\.mintRequestId\(/.test(appSrc) ||
-    /resumeRequestId|mintRequestId/.test(appSrc),
-    "every resume tap must mint a fresh request_id (S2 receipts)");
+function resumeBodyWindow() {
+  const at = appSrc.indexOf('"/session/resume"');
+  assert.ok(at !== -1, "/session/resume must be posted from the sheet wiring");
+  /* The reuse decision (nsModel.resumeRequestId) rides ON TAP, just
+   * before the fetch; the body carries the decided id. */
+  return appSrc.slice(Math.max(0, at - 450), at + 700);
+}
+
+test("a same-operation retry reuses the id; a new operation mints a fresh one (S4)", () => {
+  const window = resumeBodyWindow();
+  assert.match(window, /var op = nsModel\.resumeRequestId\(/,
+    "the resume tap must decide reuse through the pure model");
+  assert.match(window, /request_id:\s*op\.request_id/,
+    "the resume body must carry the operation's request id — a lost response " +
+    "or an in-flight re-tap reaches the SAME server receipt instead of " +
+    "minting a second launch");
+  /* The retry state is held between taps and cleared on success and on
+   * sheet close, so a later tap is never a silent replay of an old op. */
+  assert.match(appSrc, /newResumeRetry = op\.retry/);
+  assert.ok(appSrc.split("newResumeRetry = null").length - 1 >= 2,
+    "the retry state must be cleared on success AND on sheet close");
+});
+
+test("the resume body carries the picked workspace_id (S4)", () => {
+  const body = resumeBodyWindow();
+  assert.match(body, /workspace_id:\s*newSessionState\.workspaceId \|\| null/,
+    "POST /session/resume must send the sheet's picked workspace (null keeps " +
+    "the current-workspace destination, exactly as before)");
+  assert.match(appSrc, /detail === "unknown_workspace"/,
+    "the server's validated refusal must get its own honest toast");
+  assert.ok(appSrc.includes('t("newsession.err_resume_workspace")'),
+    "the unknown_workspace refusal must ride the i18n key");
 });
 
 test("only server-offered resume harnesses become options", () => {
@@ -336,6 +403,7 @@ const NEW_KEYS = [
   "newsession.resume", "newsession.resume_pick", "newsession.resume_empty",
   "newsession.resumed", "newsession.resume_failed",
   "newsession.err_resume_harness", "newsession.err_resume_cwd",
+  "newsession.err_resume_workspace",
   "newsession.folder_spaces", "newsession.space_cwd_unknown",
   "newsession.space_outside_roots",
 ];

@@ -249,6 +249,7 @@
     "newsession.resume_failed": "Could not resume the session — try again",
     "newsession.err_resume_harness": "That agent has no verified resume form",
     "newsession.err_resume_cwd": "That session has no known folder to reopen",
+    "newsession.err_resume_workspace": "The picked space is no longer offered — pick another",
 
     /* ---- pending sheet ---- */
     "pendsheet.aria": "Pending",

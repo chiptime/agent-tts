@@ -1292,6 +1292,26 @@ class TestToolsResumeSession:
         assert stub.tab_calls  # the tab WAS created
         assert "run boom" in result
 
+    def test_an_undelivered_resume_command_keeps_the_tab_named(
+        self, settings, make_stub
+    ):
+        # S4: the tab is THIS operation's own creation, but a failed
+        # `pane run` (a timeout included) cannot prove the command was
+        # never typed — the tab is kept, NAMED, and never auto-closed.
+        from tests.test_tools_create_session import NEW_PANE, NEW_TAB, CreateStub
+
+        stub = CreateStub(fail_run=True, agents=make_stub()._agents)
+        tools = self._tools(settings, stub)
+        result = tools.resume_session("claude", "abc", cwd="/repo")
+        assert result.startswith("error typing the resume command")
+        assert "were created and kept" in result
+        assert "run boom" in result
+        assert NEW_TAB in result and NEW_PANE in result
+        # The failed resume attempt, and NOTHING else (no cleanup typing).
+        assert stub.pane_run_calls == [
+            {"pane_id": NEW_PANE, "command": "claude --resume abc"}
+        ]
+
     def test_the_tab_label_is_masked_and_the_title_falls_back(
         self, settings, make_stub
     ):
