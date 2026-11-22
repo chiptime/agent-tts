@@ -644,6 +644,25 @@ class PaneReplyRequest(BaseModel):
         return value
 
 
+#: The ONE refusal every non-steerable surface answers — a local pane
+#: outside the steer table, a pre-S12 tool double, and now a remote crew
+#: owner that cannot honor the flag either (parity wave 2, S1): the
+#: operator hears the same words no matter where the pane lives.
+STEER_REFUSAL_DETAIL = (
+    "Ese agente no admite inyectar mensajes en un turno "
+    "en curso; envía la respuesta normal y espera a que "
+    "termine."
+)
+
+#: The closed outcome set a remote draft follow-up may resolve a receipt
+#: with — any other peer answer resolves nothing (the receipt is never
+#: corrupted by a peer this lead cannot reason about).
+CREW_FOLLOWUP_OUTCOMES = {
+    "submit": ("sent", "typed_not_submitted", "unknown"),
+    "discard": ("discarded", "typed_not_submitted", "unknown"),
+}
+
+
 class PaneStopRequest(BaseModel):
     """POST /pane/stop body: the exact pane whose turn to interrupt."""
 
@@ -3274,27 +3293,96 @@ def create_app(
         inject into a RUNNING turn and is refused (422) for harnesses
         outside the steer table — the plain reply stays the only default.
         A remote crew pane (``<host>:<pane>``) proxies to its owner's
-        /crew/v1/reply; the owner's outcome mapping travels back
-        verbatim and the write is audited here as the operator's (the
-        owner's own brain tracks that send — nothing starts twice).
+        /crew/v1/reply — ``steer`` included, and a peer that cannot
+        honor it (an owner predating the field, or its own
+        unsupported_steer verdict) answers the SAME canonical 422 a
+        local non-steerable pane gets, never a silent ordinary send.
+        The owner's receipt evidence is recorded HERE as a lead-side
+        receipt (parity wave 2, S1): an id and a tracker the PWA can
+        follow, with Submit/Discard forwarded to the owner where the
+        draft lives. The write is audited with the owner's REAL outcome.
         parity-f7g: a receipt outcome of ``sent``/``effective``/
         ``unknown`` starts one send tracker keyed by the receipt id.
         """
         crew_peer = crew_remote_peer(body.pane_id)
         if crew_peer is not None:
             _, remote_id = split_pane_id(body.pane_id)
-            result = crew_call(
-                crew_peer, lambda client: client.reply(remote_id, body.text),
-                op="reply",
+            try:
+                result = crew_call(
+                    crew_peer,
+                    lambda client: client.reply(
+                        remote_id, body.text, steer=body.steer
+                    ),
+                    op="reply",
+                )
+            except HTTPException as exc:
+                # A steer a remote owner cannot honor is refused with
+                # the SAME canonical refusal a local non-steerable pane
+                # gets — it is never retried as an ordinary send. 400 is
+                # an owner predating the steer field (its dispatcher
+                # rejects the unknown kwarg); 422 is the owner's own
+                # unsupported_steer verdict.
+                if body.steer and exc.status_code in (400, 422):
+                    raise HTTPException(
+                        status_code=422, detail=STEER_REFUSAL_DETAIL,
+                    ) from exc
+                raise
+            payload = result if isinstance(result, dict) else {}
+            # The owner's receipt evidence (its verified read-back,
+            # masked on its side) becomes a LEAD-side receipt: an id and
+            # a tracker the PWA can follow, with the host-qualified pane
+            # id every remote surface speaks.
+            receipt_fields = payload.get("receipt")
+            receipt = None
+            if isinstance(receipt_fields, dict) and receipt_fields.get("outcome"):
+                receipt = receipt_store.record(
+                    body.pane_id,
+                    receipt_fields["outcome"],
+                    detail=receipt_fields.get("detail", ""),
+                    text_hint=receipt_fields.get("text_hint", ""),
+                    line_hint=receipt_fields.get("line_hint", ""),
+                )
+            if receipt is not None and receipt["outcome"] in TRACKED_OUTCOMES:
+                send_tracker.start(
+                    receipt["id"],
+                    body.pane_id,
+                    receipt["outcome"],
+                    sent_at=receipt["created_at"],
+                    pane_status=(
+                        watcher.last_known_status(body.pane_id)
+                        if hasattr(watcher, "last_known_status") else None
+                    ),
+                )
+            # The audit carries the peer's REAL outcome (S1: a peer 200
+            # whose receipt says typed_not_submitted is not a
+            # ``delivered``), plus the steer flag and the actionable
+            # receipt id the local route records.
+            outcome = (
+                receipt["outcome"] if receipt is not None else "delivered"
             )
+            detail = {"outcome": outcome, "text": body.text, "crew": True}
+            if body.steer:
+                detail["steer"] = True
+            if receipt is not None and receipt["outcome"] in (
+                "typed_not_submitted", "refused", "unknown"
+            ):
+                detail["receipt"] = {
+                    "id": receipt["id"], "outcome": receipt["outcome"],
+                }
             audit_log.record({
                 "action": "pane.reply",
                 "pane_id": body.pane_id,
                 "device": audit_device(request),
-                "detail": {
-                    "outcome": "delivered", "text": body.text, "crew": True,
-                },
+                "detail": detail,
             })
+            if receipt is not None:
+                return {
+                    "ok": bool(payload.get("ok", True)),
+                    "pane_id": body.pane_id,
+                    "receipt": receipt,
+                }
+            # Legacy owner double without receipt evidence: the exact
+            # verbatim passthrough this route has always answered.
             return result if isinstance(result, dict) else {"ok": True}
         verified = getattr(tools, "verified_reply_to_pane", None)
         if verified is not None:
@@ -3306,11 +3394,7 @@ def create_app(
             if body.steer:
                 raise HTTPException(
                     status_code=422,
-                    detail=(
-                        "Ese agente no admite inyectar mensajes en un turno "
-                        "en curso; envía la respuesta normal y espera a que "
-                        "termine."
-                    ),
+                    detail=STEER_REFUSAL_DETAIL,
                 )
             result = tools.reply_to_pane(body.pane_id, body.text)
             # A pre-S12 double models the pre-S12 surface: legacy
@@ -3364,10 +3448,7 @@ def create_app(
         if outcome == "unsupported_steer":
             raise HTTPException(
                 status_code=422,
-                detail=(
-                    "Ese agente no admite inyectar mensajes en un turno en "
-                    "curso; envía la respuesta normal y espera a que termine."
-                ),
+                detail=STEER_REFUSAL_DETAIL,
             )
         if outcome == "delivered":
             if receipt is not None and receipt["outcome"] == "typed_not_submitted":
@@ -3475,6 +3556,53 @@ def create_app(
             "receipt": resolved,
         }
 
+    def _forward_receipt_followup(request: Request, action: str, receipt: dict):
+        """Acts on one remote draft ON its owner (parity wave 2, S1).
+
+        The lead-side receipt identifies the card, but the terminal and
+        the draft live on the owner — its own handler runs the same
+        tools the local routes run, against the same S2 binding. The
+        owner's verdict resolves the receipt exactly as a local
+        follow-up would; an owner predating the follow-up routes (its
+        dispatcher answers 404) is a clear 502 with the receipt
+        untouched. None means the pane was not remote."""
+        peer = crew_remote_peer(receipt["pane_id"])
+        if peer is None:
+            return None
+        _, remote_id = split_pane_id(receipt["pane_id"])
+        hints = (receipt["text_hint"], receipt.get("line_hint", ""))
+        try:
+            payload = crew_call(
+                peer,
+                lambda client: (
+                    client.receipt_submit(remote_id, *hints)
+                    if action == "submit"
+                    else client.receipt_discard(remote_id, *hints)
+                ),
+                op=f"receipt.{action}",
+            )
+        except HTTPException as exc:
+            if exc.status_code == 404:
+                raise HTTPException(
+                    status_code=502,
+                    detail=(
+                        "el peer del crew no admite completar este "
+                        "borrador; termínalo desde su terminal."
+                    ),
+                ) from exc
+            raise
+        outcome = payload.get("outcome") if isinstance(payload, dict) else None
+        if outcome not in CREW_FOLLOWUP_OUTCOMES[action]:
+            raise HTTPException(
+                status_code=502,
+                detail="el peer del crew respondió un estado desconocido.",
+            )
+        return _resolve_receipt_and_audit(
+            request, f"pane.receipt.{action}", receipt,
+            {"outcome": outcome,
+             "detail": payload.get("detail", "") if isinstance(payload, dict) else ""},
+        )
+
     @app.post("/pane/receipt/{receipt_id}/submit")
     def pane_receipt_submit(request: Request, receipt_id: str) -> dict:
         """Presses Enter on one typed-but-not-submitted draft (S12).
@@ -3483,9 +3611,14 @@ def create_app(
         re-sent (that would duplicate the draft) — only the commit key,
         then the same read-back decides the outcome. The receipt flips
         to ``sent`` when the echo left the input line, stays
-        ``typed_not_submitted`` (re-offerable) when it did not.
+        ``typed_not_submitted`` (re-offerable) when it did not. A draft
+        on a remote crew pane is keyed ON its owner (parity wave 2, S1)
+        with the same binding.
         """
         receipt = _live_typed_receipt_or_error(receipt_id)
+        forwarded = _forward_receipt_followup(request, "submit", receipt)
+        if forwarded is not None:
+            return forwarded
         result = tools.submit_typed_text(
             receipt["pane_id"], receipt["text_hint"], receipt.get("line_hint", "")
         )
@@ -3498,9 +3631,14 @@ def create_app(
         ``esc`` for every harness: it never types a character and never
         executes anything — on chat TUIs it drops the draft. The receipt
         flips to ``discarded`` once the read-back sees the input line
-        clean; a surviving echo keeps it ``typed_not_submitted``.
+        clean; a surviving echo keeps it ``typed_not_submitted``. A
+        draft on a remote crew pane is cleared ON its owner (parity
+        wave 2, S1) with the same binding.
         """
         receipt = _live_typed_receipt_or_error(receipt_id)
+        forwarded = _forward_receipt_followup(request, "discard", receipt)
+        if forwarded is not None:
+            return forwarded
         result = tools.discard_typed_text(
             receipt["pane_id"], "", receipt["text_hint"], receipt.get("line_hint", "")
         )
@@ -5000,6 +5138,11 @@ def create_app(
             if receipt is not None:
                 body["receipt"] = receipt
             return 200, body
+        if outcome == "unsupported_steer":
+            # The owner's honest verdict: its pane cannot honor a steer.
+            # The lead translates this status into the canonical refusal
+            # its operator speaks — an ordinary send never happens.
+            return 422, {"detail": "unsupported_steer"}
         if outcome == "blocked":
             return 409, {"detail": "agent_blocked"}
         if outcome == "unknown_pane":
@@ -5033,15 +5176,21 @@ def create_app(
                 return 404, {"detail": "pane not found"}
             return payload
 
-        def _h_reply(pane_id, text):
+        def _h_reply(pane_id, text, steer=False):
             if not isinstance(text, str) or not text.strip():
                 return 400, {"detail": "text is required"}
+            if not isinstance(steer, bool):
+                return 400, {"detail": "steer must be a boolean"}
             verified = getattr(tools, "verified_reply_to_pane", None)
-            result = (
-                verified(pane_id, text)
-                if verified is not None
-                else tools.reply_to_pane(pane_id, text)
-            )
+            if verified is not None:
+                result = verified(pane_id, text, steer=steer)
+            else:
+                # Pre-S12 tool doubles model a surface that cannot vouch
+                # for a steer (the local route's own convention):
+                # refuse — a steer never degrades into a plain reply.
+                if steer:
+                    return 422, {"detail": "unsupported_steer"}
+                result = tools.reply_to_pane(pane_id, text)
             response = _crew_reply_outcome(result, pane_id)
             # Host-local trail of the write this peer just executed
             # (T3/S3, doc 10's host-local audit). Same line the HTTP
@@ -5050,14 +5199,55 @@ def create_app(
             # bearer (the _h_approval_action convention). The lead's
             # own trail records the proxied send; duplicates never
             # happen on one machine.
+            detail = {
+                "outcome": result["outcome"], "text": text, "crew": True,
+            }
+            if steer:
+                detail["steer"] = True
             audit_log.record({
                 "action": "pane.reply",
                 "pane_id": pane_id,
-                "detail": {
-                    "outcome": result["outcome"], "text": text, "crew": True,
-                },
+                "detail": detail,
             })
             return response
+
+        def _h_receipt_followup(pane_id, action, text_hint, line_hint=""):
+            """Runs one draft follow-up ON this host (parity wave 2,
+            S1): the lead recorded the receipt, but the terminal and the
+            draft live here — the same tools the local routes run, the
+            same S2 binding (the key is pressed only against the
+            receipt's exact recorded line)."""
+            if not isinstance(text_hint, str) or not text_hint.strip():
+                return 400, {"detail": "text_hint is required"}
+            if not isinstance(line_hint, str):
+                return 400, {"detail": "line_hint must be a string"}
+            if action == "submit":
+                result = tools.submit_typed_text(pane_id, text_hint, line_hint)
+            else:
+                result = tools.discard_typed_text(
+                    pane_id, "", text_hint, line_hint
+                )
+            outcome = result["outcome"]
+            audit_log.record({
+                "action": f"pane.receipt.{action}",
+                "pane_id": pane_id,
+                "detail": {"outcome": outcome, "crew": True},
+            })
+            if outcome == "error":
+                return 502, {"detail": (
+                    result.get("detail") or f"{action} failed"
+                )}
+            return 200, {"outcome": outcome, "detail": result.get("detail", "")}
+
+        def _h_receipt_submit(pane_id, text_hint, line_hint=""):
+            return _h_receipt_followup(
+                pane_id, "submit", text_hint, line_hint
+            )
+
+        def _h_receipt_discard(pane_id, text_hint, line_hint=""):
+            return _h_receipt_followup(
+                pane_id, "discard", text_hint, line_hint
+            )
 
         def _h_keys(pane_id, keys):
             if not isinstance(keys, list) or not keys:
@@ -5161,6 +5351,8 @@ def create_app(
             "mirror": _h_mirror,
             "reply": _h_reply,
             "keys": _h_keys,
+            "receipt_submit": _h_receipt_submit,
+            "receipt_discard": _h_receipt_discard,
             "dialog_answer": _h_dialog_answer,
             "approval_current": _h_approval_current,
             "approval_action": _h_approval_action,

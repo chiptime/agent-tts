@@ -68,8 +68,10 @@ GET  /crew/v1/herd
 GET  /crew/v1/view?pane_id=
 GET  /crew/v1/history?pane_id=&…           query passes through
 GET  /crew/v1/pane/{pane_id}/mirror?…
-POST /crew/v1/pane/{pane_id}/reply         {"text": …}
+POST /crew/v1/pane/{pane_id}/reply         {"text": …[, "steer": true]}
 POST /crew/v1/pane/{pane_id}/keys          {"keys": […]}
+POST /crew/v1/pane/{pane_id}/receipt/submit     {"text_hint": …[, "line_hint": …]}
+POST /crew/v1/pane/{pane_id}/receipt/discard    {"text_hint": …[, "line_hint": …]}
 POST /crew/v1/pane/{pane_id}/dialog/answer {…dialog payload…}
 GET  /crew/v1/approval/current?pane_id=
 POST /crew/v1/approval/{gate_id}/action    {"decision": …}
@@ -80,12 +82,27 @@ POST /crew/v1/msg/cancel                 {…message payload…}
 ```
 
 Handlers are injected: `herd()`, `view(pane_id)`, `history(pane_id, **q)`,
-`mirror(pane_id, **q)`, `reply(pane_id, text)`, `keys(pane_id, keys)`,
+`mirror(pane_id, **q)`, `reply(pane_id, text, steer=False)`,
+`keys(pane_id, keys)`, `receipt_submit(pane_id, text_hint, line_hint="")`,
+`receipt_discard(pane_id, text_hint, line_hint="")`,
 `dialog_answer(pane_id, **payload)`, `approval_current(pane_id=None, **q)`,
 `approval_action(gate_id, decision)`. A handler returns a payload (200)
 or `(status, payload)`; the owner's 404 for a dead gate travels as-is.
 The dispatcher re-reads the roster per request, so rotations,
 revocations and promotions land without a restart.
+
+Versioning note (parity wave 2, S1): `steer` rides the reply body ONLY
+when true, so a plain reply is byte-identical across owner vintages; an
+owner that predates the field answers a steer with its own dispatcher's
+400 (unknown kwarg), which the lead translates into the canonical local
+steer refusal — a steer never silently degrades into an ordinary send.
+An owner whose pane cannot honor a steer answers
+`422 {"detail": "unsupported_steer"}`. The receipt follow-up routes are
+additive: the owner runs the same tools the local submit/discard routes
+run (the draft and its terminal live on the owner), answering
+`{"outcome": …, "detail": …}`; owners without the routes answer the
+dispatcher's 404, which the lead surfaces as a clear 502 with the
+receipt untouched.
 
 Message handlers receive `member` (the authenticated TLS identity) and
 `payload` (the untrusted JSON body) as separate keyword arguments.
@@ -106,7 +123,8 @@ routes return 404 until a message handler is installed by the server.
   `None` (unknown host) must surface as an error, never fall back to local.
 - Reads/writes to a remote pane go through `CrewClient` (one per peer,
   `cert_pem=roster.peer_cert_pem(name)`). Reads: `herd/view/history/mirror`;
-  writes: `reply/keys/dialog_answer`. Timeouts default to 8 s;
+  writes: `reply/keys/receipt_submit/receipt_discard/dialog_answer`.
+  Timeouts default to 8 s;
   `client.health` tracks per-peer backoff — mark and skip dead peers in
   sweeps, but always try approvals (they must not be dropped).
 - Gates (doc 10 risk 4): a gate is owned by the host that ran the send.

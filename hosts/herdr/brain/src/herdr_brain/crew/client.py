@@ -273,10 +273,41 @@ class CrewClient:
 
     # -- proxied writes ────────────────────────────────────────────────────
 
-    def reply(self, pane_id: str, text: str) -> object:
+    def reply(self, pane_id: str, text: str, steer: bool = False) -> object:
+        segment = _quote_path_segment(pane_id)
+        body: dict = {"text": text}
+        if steer:
+            # The flag rides ONLY when asked: an owner predating the
+            # field keeps receiving the byte-identical ordinary reply,
+            # and a steer it cannot parse fails closed at its own
+            # dispatcher (an unknown kwarg is a 400, never silence).
+            body["steer"] = True
+        return self._call(
+            "POST", f"/crew/v1/pane/{segment}/reply", json_body=body
+        )
+
+    def receipt_submit(
+        self, pane_id: str, text_hint: str, line_hint: str = ""
+    ) -> object:
+        """Finishes one typed-but-not-submitted draft ON the owner (the
+        host where the terminal lives). The masked hints are the same
+        binding the local follow-up routes revalidate."""
         segment = _quote_path_segment(pane_id)
         return self._call(
-            "POST", f"/crew/v1/pane/{segment}/reply", json_body={"text": text}
+            "POST",
+            f"/crew/v1/pane/{segment}/receipt/submit",
+            json_body={"text_hint": text_hint, "line_hint": line_hint},
+        )
+
+    def receipt_discard(
+        self, pane_id: str, text_hint: str, line_hint: str = ""
+    ) -> object:
+        """Clears one typed draft ON the owner with the safe recipe."""
+        segment = _quote_path_segment(pane_id)
+        return self._call(
+            "POST",
+            f"/crew/v1/pane/{segment}/receipt/discard",
+            json_body={"text_hint": text_hint, "line_hint": line_hint},
         )
 
     def keys(self, pane_id: str, keys: list) -> object:
