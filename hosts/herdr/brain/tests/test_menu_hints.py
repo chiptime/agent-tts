@@ -248,3 +248,34 @@ class TestReadKeyHintFooter:
     def test_empty_returns_none(self):
         assert read_key_hint_footer([]) is None
         assert read_key_hint_footer(["", "   "]) is None
+
+
+class TestGluedBodyRowsRefuseTheGroup:
+    """A body row glued into the group through the dangling `to` of the
+    row above it (real rewind capture) is dialog content, not footer:
+    the group dies and the clean footer below wins."""
+
+    def test_pointer_glue_refuses_group_footer_wins(self):
+        texts = [
+            "   ❯ (current)",
+            "   Enter to continue · Esc to cancel",
+        ]
+        found = read_key_hint_footer(texts)
+        assert found is not None
+        assert found.start_line == 1
+        assert [(a.label, a.keys) for a in found.actions] == [
+            ("Continue", ("enter",)),
+            ("Cancel", ("esc",)),
+        ]
+
+    def test_long_transcript_prefix_refuses_the_group(self):
+        texts = [
+            "some reallly long transcript line 46 chars wide exactly here",
+            "Enter to select · Esc to cancel",
+        ]
+        found = read_key_hint_footer(texts)
+        assert found is not None
+        assert [(a.label, a.keys) for a in found.actions] == [
+            ("Select", ("enter",)),
+            ("Cancel", ("esc",)),
+        ]

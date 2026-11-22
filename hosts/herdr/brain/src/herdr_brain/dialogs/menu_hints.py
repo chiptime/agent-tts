@@ -62,6 +62,16 @@ HINT_FORM = re.compile(r"^(.+?)\s+(?:to|for)\s+(.+)$", re.IGNORECASE)
 #: more chance for a body row to read like a hint.
 MAX_FOOTER_ROWS = 3
 
+#: LONGEST key token a hint may name. Real key tokens are short
+#: ("Enter", "Esc", "shift+tab", "ctrl+a", an arrow or a single
+#: letter). A joins-glued body row reads as a hint THROUGH the dangling
+#: "to" of the row above it — "❯ (current) Enter to continue" (real
+#: rewind capture) — and its key "token" is a prose prefix: no screen
+#: names a key with fifteen characters. A group carrying such a
+#: segment is refused whole rather than silently losing the real hints
+#: to a glued impostor row.
+MAX_KEY_TOKEN_CHARS = 12
+
 
 @dataclass(frozen=True)
 class MenuAction:
@@ -245,7 +255,7 @@ def read_key_hint_footer(
             continue
         text = " ".join(row.strip() for row in rows)
         segments = SEGMENT_SPLIT.split(text)
-        if not all(HINT_FORM.match(segment.strip()) for segment in segments):
+        if not all(_is_hint_shaped(segment) for segment in segments):
             continue
         actions = parse_key_hint_footer(text)
         if not actions:
@@ -254,6 +264,20 @@ def read_key_hint_footer(
             text=text, start_line=start, end_line=end, actions=actions
         )
     return best
+
+
+def _is_hint_shaped(segment: str) -> bool:
+    """Whether one joined segment is hint text: the ``to``/``for`` shape,
+    and — when it carries a ``to`` — a SHORT key token. A long token is
+    a body row glued through the dangling "to" of the row above it, not
+    a hint (:data:`MAX_KEY_TOKEN_CHARS`)."""
+    text = segment.strip()
+    if not HINT_FORM.match(text):
+        return False
+    match = HINT.match(text)
+    if match is None:
+        return True  # the for-form validates the shape only
+    return len(match[1].strip()) <= MAX_KEY_TOKEN_CHARS
 
 
 def _rows_are_one_block(rows: List[str], width: int) -> bool:

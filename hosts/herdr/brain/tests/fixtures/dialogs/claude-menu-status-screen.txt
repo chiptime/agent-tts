@@ -1,0 +1,25 @@
+ ▐▛███▛█   Claude Code v2.1.291
+▝▜██████▀  Sonnet 5.5 · Claude Max
+ ▝▝   ▝▝   /tmp/claude-lab/project
+❯ read README.md and reply with one short sentence
+  Read 1 file (ctrl+o to expand)
+● The README describes a throwaway lab project used for screen captures.
+✻ Cogitated for 2s · done 6:37 PM
+❯ /status
+─────────────────────────────────────────────────────────────────────────────────
+  Settings  Status   Config   Usage   Stats
+  Version:           2.1.291
+  Session name:      README.md
+  Session ID:        00000000-0000-0000-0000-000000000000
+  Session kind:      interactive
+  Peer address:      uds:/run/user/0000/cc-socks/0000000.sock
+  cwd:               /tmp/claude-lab/project
+  Login method:      Claude Max account
+  Organization:      alice@exampleco.dev's Organization
+  Email:             alice@exampleco.dev
+  Cloud sessions:    GitHub connected
+  Model:             sonnet (claude-sonnet-5-5)
+  MCP servers:       2 connected, 1 need auth · /mcp
+  Setting sources:   User settings
+  Auto mode server:  Disabled
+  Esc to cancel
