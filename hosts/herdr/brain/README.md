@@ -1181,6 +1181,16 @@ after a local window prefix (`w1`, `w2`…).
 
 ## PWA: offline shell, updates, language and settings
 
+In the agent's **History** tab, search the turns already loaded. The count
+tracks the selected match, and the arrow buttons (or Enter and Shift+Enter)
+wrap through matches. Search reveals loaded turns as needed without fetching
+more; scroll to the top or use **Load more** to read older pages.
+
+State polls run every 5 seconds in normal use or while the event stream is
+unavailable. When the stream is healthy, recent input in the visible agent
+view uses a 1.5-second poll for up to 10 seconds, and background tabs use a
+10-second safety net. The PWA refreshes state once when the stream reconnects.
+
 - **Offline shell** — the service worker precaches the shell versioned by
   the build stamp (`brain-shell-<build>`) and deletes older brain caches on
   activate. Navigations go to the network first and fall back to the cached

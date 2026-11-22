@@ -108,7 +108,8 @@ EXPECTED_DIGESTS = {
     # peers render as informational rows (index.html styles), and both
     # i18n gain herd.peer_unreachable. app.js, index.html (/) and both
     # i18n re-pinned below.
-    "/": "581ce9741fe02438a1ead1b1dd3c7ed3669e6cc1526e39da44a233fa9ef39ea0",
+    # Parity-w2 S8: loaded-history search controls and highlights.
+    "/": "f689145e2a3a0229846c60bbb6f879dc816b5f301a4a8a3a896f55b065c27b74",
     # send-track.js re-pinned for the correction batch (f7g): the
     # per-receipt seq guard (a lower seq is a stale delivery, ignored),
     # a start for an already-known receipt never regresses it, and a
@@ -147,7 +148,9 @@ EXPECTED_DIGESTS = {
     # app.js re-pinned for parity-w2 S3: the stop-failure toast model
     # (stopFailureToast pure block) branches on the server's stable
     # dialog_open reason.
-    "/app.js": "bc9a7a8f64592005ef3b64a525561294f30a74a3d164009df196fc23a3dc3b9b",
+    # Parity-w2 S8: history search and the adaptive state poll.
+    "/app.js": "0ec770543e8a4fbd9ad4a74495c1f6b9ede2467b4127db039e71f3feb59adbd8",
+    "/history.js": "fa3526827b3e791bdc8f5950e398f3e318a2bff1c85ba684f0231d22d74e08d9",
     "/push.js": "e1acadd98d95420cf9924ea633b32d9ec5b51c8654c5e7df923c2bbc5547f52c",
     "/receipts.js": "df01a313d8f6101bd9601d5a2a65eb420df7791c417a09e2d0d8c269a36742b0",
     # dialogs.js re-pinned for the parity-f7d follow-up: MODEL_SWITCH_COMMANDS
@@ -180,8 +183,9 @@ EXPECTED_DIGESTS = {
     # Re-pinned for parity T4/S4: newsession.err_resume_workspace.
     # Re-pinned for parity-w2 S3: stop.dialog_open (the localized
     # «Hay un diálogo abierto; respóndelo primero.» refusal copy).
-    "/i18n/en.js": "45f4d1b63eca2ed9dc9deaad798a6dde36d94e1f05dd1fb63392f70a168b4b6b",
-    "/i18n/es.js": "510a845bb0a589040975cf87960e43f205912de21fbee250c07593c0cb9a3d8d",
+    # Re-pinned for parity-w2 S8: history find controls and match count.
+    "/i18n/en.js": "1752119e652eddfc6eb76ead35af5e11b6216a9f00c85b1cc0c021ec5e0d7962",
+    "/i18n/es.js": "540943e011869837bcec90995b1267f7582828b0b218c61cea4687ce96be534c",
     "/settings.js": "1c2cf3ed92bf959c19ecde0107618b8d1ff0690d2c6fa7c842a2fdc551e05f72",
     "/updates.js": "7f87250cf6cd9c2b8944da632fe036d0c18a87a90f48f70b84e18bcd338cfa84",
     "/calls.js": "9b9ec591709d282c6e673770b2ffc1ed1562650104d8e8393126d186aa764165",

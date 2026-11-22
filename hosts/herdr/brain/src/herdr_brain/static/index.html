@@ -1060,6 +1060,27 @@
      * a time. Same column language as the glance list; turns arrive
      * unclipped (reading surface), older pages prepend under what is
      * held and the pager stays pinned at the panel's bottom. */
+    .history-find-bar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+      padding: 6px 10px;
+    }
+    .history-find-bar input, .history-find-bar button {
+      min-height: 44px;
+      padding: 4px 8px;
+      color: var(--text);
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+    .history-find-bar input { flex: 1 1 10em; min-width: 0; font-size: 16px; }
+    .history-find-bar button { min-width: 44px; }
+    .history-find-bar button:disabled { opacity: 0.45; }
+    #history-find-count { font-size: var(--fs-sm); }
+    .ht-text mark { color: #211b09; background: #ffe299; }
+    .ht-text mark.current { background: #ffbd52; outline: 2px solid currentColor; }
     #history-turns {
       flex: 1;
       min-height: 0;
@@ -2935,6 +2956,12 @@
          at a time; "Cargar más" (and a scroll parked at the very top)
          walk older pages, prepended without duplicates. -->
     <div id="history-panel" class="agent-panel hidden" role="tabpanel" aria-labelledby="tab-history" tabindex="0">
+      <div class="history-find-bar" role="search" aria-label="Buscar en el historial cargado" data-i18n-aria-label="history.find">
+        <input id="history-find" type="search" aria-label="Buscar en el historial cargado" data-i18n-aria-label="history.find" placeholder="Buscar en el historial cargado" data-i18n-placeholder="history.find" autocomplete="off">
+        <span id="history-find-count" role="status" aria-atomic="true"></span>
+        <button id="history-find-prev" type="button" aria-label="Coincidencia anterior" data-i18n-aria-label="history.find_prev" disabled>↑</button>
+        <button id="history-find-next" type="button" aria-label="Coincidencia siguiente" data-i18n-aria-label="history.find_next" disabled>↓</button>
+      </div>
       <div id="history-turns" aria-label="Historial completo del agente" data-i18n-aria-label="history.aria"></div>
       <button id="history-more" class="hidden" type="button" data-i18n="history.more">Cargar más</button>
       <div id="history-empty" class="hidden" data-i18n="history.empty">Sin historial de este agente todavía</div>
