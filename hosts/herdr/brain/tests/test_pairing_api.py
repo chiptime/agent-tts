@@ -317,6 +317,35 @@ def test_revoke_unknown_label_is_404(client, state_dir):
     assert resp.status_code == 404
 
 
+def test_restored_device_bearer_authenticates_through_the_gate(client, state_dir):
+    """Pin (verifier, parity wave 2 S2): after a restore, the restored
+    device's OLD token authenticates a WRITE through the real HTTP gate
+    — keeping the tokenHash is the whole point — while the corrupt
+    state and every unpaired caller stay refused."""
+    store = pairing.PairingStore(state_dir)
+    minted = store.mint(label="phone")
+    _, outcome = store.claim(minted["code"], "phone")
+    saved = (state_dir / pairing.DEVICES_FILENAME).read_text(encoding="utf-8")
+    (state_dir / "paired-devices.json.corrupt-1").write_text(saved, encoding="utf-8")
+    (state_dir / pairing.DEVICES_FILENAME).write_text("{corrupt", encoding="utf-8")
+    # Corrupt, fail closed: nobody is authorized, not even our bearer.
+    refused = client.post("/pane/reply", json={"pane_id": "w1:p2", "text": "go"})
+    assert refused.status_code == 403
+    assert refused.json()["detail"] == "dispositivo no emparejado"
+
+    assert store.restore_backup(state_dir / "paired-devices.json.corrupt-1")
+
+    ok = client.post(
+        "/pane/reply", json={"pane_id": "w1:p2", "text": "go"},
+        headers={"Authorization": f"Bearer {outcome['token']}"},
+    )
+    assert ok.status_code == 200
+    # An unpaired caller stays refused after the restore.
+    assert client.post(
+        "/pane/reply", json={"pane_id": "w1:p2", "text": "go"}
+    ).status_code == 403
+
+
 # ── AC8: the ntfy action route keeps its own token only ─────────────────────
 
 

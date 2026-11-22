@@ -741,13 +741,23 @@ class PairingStore:
         keep their ``tokenHash``, so the phones holding those tokens
         work again with no re-pairing.
 
-        Fails closed WITHOUT writing when the backup is unreadable or
+        Fail closed WITHOUT writing when the backup is unreadable or
         unparsable, is not a registry shape, or would coerce to zero
         devices — a well-formed empty registry lifts enforcement, and a
         restore that silently un-arms the gate is the one fail-open this
-        verb must never be. Raises ValueError for refused content, lets
-        OSError name an unreadable backup."""
+        verb must never be. The backup must also live INSIDE the state
+        dir: a symlink that resolves elsewhere would turn a "backup"
+        name into an arbitrary-file overwrite, so a path escaping the
+        dir is refused before anything is read. Raises ValueError for
+        refused content, lets OSError name an unreadable backup."""
         with self._lock:
+            resolved_dir = self.state_dir.resolve()
+            resolved_source = source.resolve()
+            if resolved_source.parent != resolved_dir:
+                raise ValueError(
+                    f"backup must live inside the state dir ({self.state_dir}) — "
+                    f"\"{source}\" resolves outside it"
+                )
             raw = json.loads(source.read_bytes())
             if not isinstance(raw, dict) or not isinstance(raw.get("devices"), list):
                 raise ValueError("the backup is not a paired-devices registry")

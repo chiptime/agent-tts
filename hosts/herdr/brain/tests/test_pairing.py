@@ -1054,3 +1054,88 @@ def test_cli_devices_restore_refuses_an_invalid_backup(tmp_path, monkeypatch, ca
 
 def test_cli_devices_restore_requires_a_name(tmp_path, monkeypatch, capsys):
     assert run_cli(["devices", "restore"], monkeypatch, tmp_path / "state") == 2
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "../external.json",
+        "sub/external.json",
+        "..",
+        "paired-devices.json",  # the LIVE registry is not a backup name
+    ],
+)
+def test_cli_devices_restore_refuses_paths_outside_the_state_dir(
+    bad, tmp_path, monkeypatch, capsys
+):
+    """Verifier blocker (correction batch): restore is a state-dir
+    operation and takes the bare backup NAME `devices list` prints —
+    never a path. The absolute form below points at a file that really
+    EXISTS outside the state dir, so the refusal is policy, not an
+    unreadable-path accident. The live registry stays byte-identical."""
+    state = tmp_path / "state"
+    store = pairing.PairingStore(state, now=FakeClock())
+    minted = store.mint()
+    store.claim(minted["code"], "phone")
+    before = (state / pairing.DEVICES_FILENAME).read_bytes()
+    outside = tmp_path / "external.json"
+    outside.write_text(
+        json.dumps({"devices": [
+            {"label": "evil", "tokenHash": "c" * 64, "createdAt": 5, "lastSeenAt": 5},
+        ]}),
+        encoding="utf-8",
+    )
+
+    for form in (bad, str(outside.resolve())):
+        assert run_cli(["devices", "restore", form], monkeypatch, state) != 0, form
+        out = capsys.readouterr()
+        assert "restored" not in out.out
+        assert out.err
+        assert (state / pairing.DEVICES_FILENAME).read_bytes() == before
+
+
+def test_cli_devices_restore_refuses_a_symlink_escaping_the_state_dir(
+    tmp_path, monkeypatch, capsys
+):
+    """A name with the right shape that resolves OUTSIDE the state dir
+    (symlink) is refused by the store's containment check."""
+    state = tmp_path / "state"
+    store = pairing.PairingStore(state, now=FakeClock())
+    minted = store.mint()
+    store.claim(minted["code"], "phone")
+    before = (state / pairing.DEVICES_FILENAME).read_bytes()
+    outside = tmp_path / "outside.json"
+    outside.write_text(
+        json.dumps({"devices": [
+            {"label": "evil", "tokenHash": "c" * 64, "createdAt": 5, "lastSeenAt": 5},
+        ]}),
+        encoding="utf-8",
+    )
+    name = "paired-devices.json.corrupt-1770000000"
+    (state / name).symlink_to(outside)
+
+    assert run_cli(["devices", "restore", name], monkeypatch, state) != 0
+    out = capsys.readouterr()
+    assert "restored" not in out.out
+    assert (state / pairing.DEVICES_FILENAME).read_bytes() == before
+
+
+def test_restore_backup_refuses_a_source_outside_the_state_dir(tmp_path: Path):
+    """The store-level guard behind the CLI gate: even a direct
+    restore_backup call cannot install a file that resolves outside the
+    state dir."""
+    store = pairing.PairingStore(tmp_path / "state", now=FakeClock())
+    minted = store.mint()
+    store.claim(minted["code"], "phone")
+    before = store.registry_path.read_bytes()
+    outside = tmp_path / "outside.json"
+    outside.write_text(
+        json.dumps({"devices": [
+            {"label": "evil", "tokenHash": "c" * 64, "createdAt": 5, "lastSeenAt": 5},
+        ]}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError):
+        store.restore_backup(outside)
+    assert store.registry_path.read_bytes() == before

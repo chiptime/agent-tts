@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Optional, Sequence
@@ -321,19 +322,40 @@ def cmd_devices_restore(args, state_dir: Optional[Path] = None) -> int:
     """``devices restore <backup>`` (parity wave 2 S2): replace the
     registry with a corrupt-file backup's devices. CLI-only — never a
     server route, so recovery adds no remote surface — and audited like
-    the other registry verbs. The store re-coerces the backup with the
-    live registry's strictness and refuses to write anything invalid."""
+    the other registry verbs. Only a BARE backup name that matches the
+    ``paired-devices.json.corrupt-*`` pattern is accepted: no paths, no
+    absolute forms, no ``..`` (verifier blocker) — the store re-coerces
+    the resolved file with the live registry's strictness, refuses to
+    write anything invalid, and refuses a backup resolving outside the
+    state dir (a symlink escaping it included)."""
     name = args.backup
     if not name:
         print("usage: herdr-brain devices restore <backup>", file=sys.stderr)
         return EXIT_USAGE
+    # A state-dir operation takes the NAME `devices list` prints, never
+    # a path: a separator or an absolute form is an invalid argument,
+    # not something to resolve against the caller's cwd.
+    if Path(name).name != name:
+        print(
+            f"error: restore takes the bare backup name shown by "
+            f"`devices list` — no paths (got \"{name}\")",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
+    if not re.fullmatch(
+        re.escape(DEVICES_FILENAME) + r"\.corrupt-[0-9]+(?:-[0-9]+)?", name
+    ):
+        print(
+            f"error: no backup named \"{name}\" — backups are named "
+            f"{DEVICES_FILENAME}.corrupt-<timestamp> under the state dir "
+            "(`devices list` prints them)",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
     resolved = _resolve_state_dir(state_dir)
-    source = Path(name)
-    if not source.is_absolute() and source.parent == Path("."):
-        source = resolved / name  # the bare name `devices list` prints
     store = _store(resolved)
     try:
-        restored = store.restore_backup(source)
+        restored = store.restore_backup(resolved / name)
     except ValueError as exc:
         print(f"error: {exc} — refusing (fail closed)", file=sys.stderr)
         return EXIT_FAIL
@@ -343,12 +365,12 @@ def cmd_devices_restore(args, state_dir: Optional[Path] = None) -> int:
     _audit(resolved).record({
         "action": "device.restore",
         "detail": {
-            "backup": source.name,
+            "backup": name,
             "labels": [d["label"] for d in restored["devices"]],
         },
     })
     labels = ", ".join(d["label"] for d in restored["devices"])
-    print(f"restored {len(restored['devices'])} device(s) from {source.name}: {labels}")
+    print(f"restored {len(restored['devices'])} device(s) from {name}: {labels}")
     print("  their existing tokens keep working — no re-pairing needed; "
           "the registry contents the file held before are gone (replaced).")
     return EXIT_OK
