@@ -175,8 +175,10 @@ EXPECTED_DIGESTS = {
     # Both i18n re-pinned for parity-f7g S5: the track.* keys (the
     # tracker card's Spanish lines and their English locale ride).
     # Re-pinned for parity T4/S4: newsession.err_resume_workspace.
-    "/i18n/en.js": "aa5b672ce98ae7de13a740c7e9bf4ce933acdbc598802de189e919ef0e2c30e4",
-    "/i18n/es.js": "0cce6e23f3a31f51e4ba63560a0f688cf3415b1e03b4bbb4ace7e8df1c19321e",
+    # Re-pinned for parity wave 2 S2 (corrupt-registry recovery): the
+    # pair.recovered key (the PWA note naming the .corrupt-* backup).
+    "/i18n/en.js": "73fdbc5967bf611acc99c69b4269c97e10e194ad4263e28b19e0cd1110cbabba",
+    "/i18n/es.js": "71e900699a2c4579f4a0b56d04c42a1b1816bc55af36c6f6fc2823391f9932d6",
     "/settings.js": "1c2cf3ed92bf959c19ecde0107618b8d1ff0690d2c6fa7c842a2fdc551e05f72",
     "/updates.js": "7f87250cf6cd9c2b8944da632fe036d0c18a87a90f48f70b84e18bcd338cfa84",
     "/calls.js": "9b9ec591709d282c6e673770b2ffc1ed1562650104d8e8393126d186aa764165",

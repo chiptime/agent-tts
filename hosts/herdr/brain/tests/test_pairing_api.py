@@ -202,6 +202,24 @@ def test_pair_exchange_is_single_use_and_bound_to_the_code(client, state_dir):
     assert again.json()["detail"] == "no-pending"
 
 
+def test_pair_response_reports_a_corrupt_registry_recovery(client, state_dir):
+    """Parity wave 2 S2 (O2): when the claim rewrote a corrupt registry,
+    the response says so additively — the PWA can tell the operator the
+    previous devices may be lost and name the backup file."""
+    store = pairing.PairingStore(state_dir)
+    minted = store.mint(label="phone")
+    (state_dir / pairing.DEVICES_FILENAME).write_text("{corrupt", encoding="utf-8")
+
+    resp = client.post("/pair", json={"code": minted["code"], "label": "phone"})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["recovered"] is True
+    assert body["backup"].startswith("paired-devices.json.corrupt-")
+    # The backup holds the ORIGINAL corrupt bytes.
+    assert (state_dir / body["backup"]).read_text(encoding="utf-8") == "{corrupt"
+
+
 def test_pair_five_wrong_codes_destroy_the_pending(client, state_dir):
     store = pairing.PairingStore(state_dir)
     store.mint()

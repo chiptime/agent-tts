@@ -3,8 +3,10 @@
  * The fake DOM implements only the surface pairing.js touches (the same
  * plain-object approach as toast.test.js: no jsdom, no dependencies).
  * The HTTP seam is injected exactly as app.js wires it, so the suite
- * pins the wire shapes: POST /pair {code,label} -> {token,label},
- * GET /devices -> {enforced,current,devices}, POST /devices/revoke. */
+ * pins the wire shapes: POST /pair {code,label} -> {token,label} plus
+ * the additive {recovered,backup} the corrupt-registry recovery rides
+ * (parity wave 2 S2), GET /devices -> {enforced,current,devices},
+ * POST /devices/revoke. */
 
 const test = require("node:test");
 const assert = require("node:assert");
@@ -146,6 +148,42 @@ test("pair failure keeps the old token and reports the reason", async () => {
   assert.equal(outcome, "bad-code");
   assert.equal(storage.items[TOKEN_KEY], "old-token");
   assert.equal(ui.isPaired(), false); // no /devices call confirmed it
+});
+
+/* ---- corrupt-registry recovery (parity wave 2 S2, O2) ---- */
+
+function allText(node) {
+  return (node.textContent || "") + node.children.map(allText).join("");
+}
+
+test("pair surfaces the corrupt-registry recovery note with the backup name", async () => {
+  const { ui, http, doc } = makeUI();
+  http.responder.queue = [
+    { status: 200, json: { token: "tok-1", label: "móvil", recovered: true,
+                           backup: "paired-devices.json.corrupt-1770000000" } },
+    { status: 200, json: { enforced: true, current: "móvil", devices: [
+      { label: "móvil", createdAt: 1, lastSeenAt: 2, current: true },
+    ] } },
+  ];
+
+  await ui.pair("AB23CD45", "móvil");
+
+  const joined = allText(doc.getElementById("pairing-box"));
+  assert.ok(joined.includes("paired-devices.json.corrupt-1770000000"),
+    "the note names the backup file");
+  assert.ok(joined.includes("corrupto"), "the note says the registry was corrupt");
+});
+
+test("pair without a recovery answer renders no note (shape pin)", async () => {
+  const { ui, http, doc } = makeUI();
+  http.responder.queue = [
+    { status: 200, json: { token: "tok-2", label: "x" } },
+    { status: 200, json: { enforced: true, current: "x", devices: [] } },
+  ];
+
+  await ui.pair("AB23CD45", "x");
+
+  assert.ok(!allText(doc.getElementById("pairing-box")).includes("corrupto"));
 });
 
 /* ---- device status ---- */

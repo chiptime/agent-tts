@@ -57,6 +57,12 @@
     var state = { enforced: false, current: null, devices: [] };
     var offerPending = false;
     var expiredPending = false;
+    /* Parity wave 2 S2 (O2): when OUR claim rewrote a corrupt registry,
+     * the /pair answer names the backup file. The note stays rendered
+     * for the session — the operator needs the name to run
+     * `herdr-brain devices restore` later, and a poll refreshing it
+     * away would hide the loss again. */
+    var recoverNote = null;
 
     function token() {
       try { return storage.getItem(TOKEN_KEY) || null; } catch (err) { return null; }
@@ -135,6 +141,14 @@
             "El token de este dispositivo caducó. Pide un código nuevo con " +
             "`herdr-brain pair` y vuelve a emparejar (o pide al operador ampliar " +
             "el plazo con `devices set-expiry`).")));
+      }
+      if (recoverNote) {
+        root.appendChild(el("div", "pair-hint pair-hint-corrupt",
+          tr("pair.recovered",
+              "El registro de dispositivos estaba corrupto: los emparejados " +
+              "anteriores pueden haberse perdido. Copia de seguridad guardada " +
+              "como «{backup}» — recupérala con `herdr-brain devices restore`.")
+            .replace("{backup}", recoverNote)));
       }
 
       var status = el("div", "pair-status");
@@ -277,6 +291,10 @@
           state.current = body.label;
           state.enforced = true;
           offerPending = false;
+          /* The server sets `recovered`/`backup` only when the claim
+           * replaced a corrupt registry (parity wave 2 S2); the
+           * valid-registry answer carries neither. */
+          recoverNote = body.recovered ? (body.backup || "") : null;
           onPaired(body.label);
           return refresh().then(function () { return "ok"; });
         });

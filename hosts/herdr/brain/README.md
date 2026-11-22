@@ -1048,7 +1048,17 @@ The requirement fails CLOSED: a corrupt, truncated or entry-incomplete
 authorized — only an absent file or a well-formed zero-device registry
 (the file revoking the last device writes) leaves writes open, and
 `herdr-brain pair` always recovers the state (a claim rewrites a valid
-registry). A present-but-unusable `expiresAt` drops the entry (it never
+registry). When that claim replaces a CORRUPT file, it first copies the
+original bytes to `paired-devices.json.corrupt-<unix-timestamp>` in the
+state dir (0600, never overwriting an earlier backup) and says so — the
+`POST /pair` answer carries additive `recovered`/`backup` fields the
+PWA shows as a note, `devices list` names any `.corrupt-*` backup on
+disk (and says when the live registry is corrupt), and
+`devices restore <backup>` (CLI-only, audited, `device.restore`) puts a
+backup's devices back with their `tokenHash` intact — the phones
+holding those tokens work again with no re-pairing. A backup that
+coerces to zero usable devices is refused: a restore can never un-arm
+the gate. A present-but-unusable `expiresAt` drops the entry (it never
 widens into "never expires"). `pair --label` refuses an unusable label
 (empty after trimming, or over 48 characters) instead of silently letting
 the phone choose one; the state directory is retightened to `0700`

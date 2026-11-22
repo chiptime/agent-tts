@@ -816,3 +816,241 @@ def test_cli_set_expiry_unknown_label_lists_the_paired_names(tmp_path, monkeypat
     assert run_cli(["devices", "set-expiry", "ghost", "1h"], monkeypatch, state) == 1
     err = capsys.readouterr().err
     assert "ghost" in err and "phone" in err
+
+
+# ── corrupt-registry recovery (parity wave 2 S2, operator choice O2) ─────────
+
+
+def test_registry_corrupt_pure_verdict():
+    """True whenever coercion would drop content the raw value holds:
+    an unparsable read (None), a non-registry shape, or entries coercion
+    drops (incomplete, duplicate labels)."""
+    assert pairing.registry_corrupt(None) is True
+    assert pairing.registry_corrupt([]) is True
+    assert pairing.registry_corrupt("x") is True
+    assert pairing.registry_corrupt({"devices": {}}) is True
+    assert pairing.registry_corrupt({"devices": [{"label": "bad"}]}) is True
+    assert pairing.registry_corrupt({"devices": [
+        {"label": "a", "tokenHash": "a" * 64},
+        {"label": "a", "tokenHash": "b" * 64},
+    ]}) is True  # the duplicate label would be dropped
+    assert pairing.registry_corrupt({"devices": []}) is False
+    assert pairing.registry_corrupt({"devices": [
+        {"label": "a", "tokenHash": "a" * 64},
+    ]}) is False
+
+
+def test_claim_backs_up_a_corrupt_registry_before_rewriting(tmp_path: Path):
+    """O2: a claim that would replace corrupt bytes first copies the
+    ORIGINAL bytes to paired-devices.json.corrupt-<ts> (0600, atomic)
+    and says so in the outcome — the loss is never silent."""
+    store = pairing.PairingStore(tmp_path, now=FakeClock(1_770_000_000.0))
+    minted = store.mint(label="phone")
+    corrupt = "{not json at all"
+    (tmp_path / pairing.DEVICES_FILENAME).write_text(corrupt, encoding="utf-8")
+
+    status, outcome = store.claim(minted["code"], "phone")
+
+    assert status == "ok"
+    assert outcome["recovered"] is True
+    assert outcome["backup"] == "paired-devices.json.corrupt-1770000000"
+    backup = tmp_path / outcome["backup"]
+    assert backup.read_text(encoding="utf-8") == corrupt  # the original bytes
+    assert stat.S_IMODE(backup.stat().st_mode) == 0o600
+    # The live registry parses again; the gate stays fail-closed ON.
+    assert store.enforced() is True
+    assert store.resolve(outcome["token"])["label"] == "phone"
+
+
+def test_claim_backs_up_a_shape_broken_registry_too(tmp_path: Path):
+    """Parsed-but-dropped content is corruption as well: the raw bytes
+    the claim is about to discard reach the backup file first."""
+    store = pairing.PairingStore(tmp_path, now=FakeClock(1_770_000_000.0))
+    minted = store.mint(label="phone")
+    raw = json.dumps({"devices": [
+        {"label": "old", "tokenHash": "a" * 64},
+        {"label": "broken"},
+    ]})
+    (tmp_path / pairing.DEVICES_FILENAME).write_text(raw, encoding="utf-8")
+
+    status, outcome = store.claim(minted["code"], "phone")
+
+    assert status == "ok"
+    assert outcome["recovered"] is True
+    assert (tmp_path / outcome["backup"]).read_text(encoding="utf-8") == raw
+
+
+def test_claim_never_overwrites_an_existing_corrupt_backup(tmp_path: Path):
+    store = pairing.PairingStore(tmp_path, now=FakeClock(1_770_000_000.0))
+    minted = store.mint(label="phone")
+    (tmp_path / pairing.DEVICES_FILENAME).write_text("{first", encoding="utf-8")
+    existing = tmp_path / "paired-devices.json.corrupt-1770000000"
+    existing.write_text("EARLIER BACKUP", encoding="utf-8")
+
+    status, outcome = store.claim(minted["code"], "phone")
+
+    assert status == "ok"
+    assert outcome["backup"] == "paired-devices.json.corrupt-1770000000-1"
+    assert existing.read_text(encoding="utf-8") == "EARLIER BACKUP"  # untouched
+
+
+def test_claim_on_a_valid_registry_writes_no_backup_and_keeps_the_outcome_shape(tmp_path: Path):
+    """Pin (S2): a valid registry keeps today's claim behavior — no
+    backup file, and the outcome carries exactly {token, label}."""
+    store = pairing.PairingStore(tmp_path, now=FakeClock())
+    first = store.mint(label="first")
+    store.claim(first["code"], "first")
+    second = store.mint(label="second")
+
+    status, outcome = store.claim(second["code"], "second")
+
+    assert status == "ok"
+    assert set(outcome) == {"token", "label"}
+    assert not list(tmp_path.glob(f"{pairing.DEVICES_FILENAME}.corrupt-*"))
+
+
+def test_claim_with_no_registry_file_writes_no_backup(tmp_path: Path):
+    """An ABSENT file is not corruption — there is nothing to save."""
+    store = pairing.PairingStore(tmp_path, now=FakeClock())
+    minted = store.mint(label="phone")
+
+    status, outcome = store.claim(minted["code"], "phone")
+
+    assert status == "ok"
+    assert "recovered" not in outcome
+    assert not list(tmp_path.glob(f"{pairing.DEVICES_FILENAME}.corrupt-*"))
+
+
+def test_restore_backup_replaces_the_registry_keeping_token_hashes(tmp_path: Path):
+    """`devices restore`: the backed-up entries come back with their
+    tokenHash — the phones holding those tokens work with no re-pairing."""
+    store = pairing.PairingStore(tmp_path, now=FakeClock())
+    minted = store.mint(label="phone")
+    _, outcome = store.claim(minted["code"], "phone")
+    saved = json.loads(store.registry_path.read_text(encoding="utf-8"))
+    backup = tmp_path / "paired-devices.json.corrupt-1770000000"
+    backup.write_text(json.dumps(saved), encoding="utf-8")
+    # Meanwhile the live registry went corrupt and the token stopped
+    # resolving (fail-closed, nobody authorized).
+    store.registry_path.write_text("{corrupt now", encoding="utf-8")
+    assert store.resolve(outcome["token"]) is None
+
+    restored = store.restore_backup(backup)
+
+    assert [d["label"] for d in restored["devices"]] == ["phone"]
+    assert store.resolve(outcome["token"])["label"] == "phone"  # hash intact
+    assert stat.S_IMODE(store.registry_path.stat().st_mode) == 0o600
+
+
+def test_restore_backup_refuses_an_unparsable_backup_without_writing(tmp_path: Path):
+    """Fail closed: an invalid backup never replaces the live registry."""
+    store = pairing.PairingStore(tmp_path, now=FakeClock())
+    minted = store.mint()
+    store.claim(minted["code"], "phone")
+    before = store.registry_path.read_bytes()
+    bad = tmp_path / "paired-devices.json.corrupt-1"
+    bad.write_text("{not json", encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        store.restore_backup(bad)
+    assert store.registry_path.read_bytes() == before
+
+
+def test_restore_backup_refuses_a_backup_with_no_usable_device(tmp_path: Path):
+    """A backup whose entries all fail coercion would restore a
+    well-formed zero-device registry — enforcement OFF. Refused."""
+    store = pairing.PairingStore(tmp_path, now=FakeClock())
+    minted = store.mint()
+    store.claim(minted["code"], "phone")
+    before = store.registry_path.read_bytes()
+    empty = tmp_path / "paired-devices.json.corrupt-2"
+    empty.write_text(json.dumps({"devices": [{"label": "ghost"}]}), encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        store.restore_backup(empty)
+    assert store.registry_path.read_bytes() == before
+
+
+def test_restore_backup_refuses_a_missing_backup(tmp_path: Path):
+    store = pairing.PairingStore(tmp_path, now=FakeClock())
+    with pytest.raises(OSError):
+        store.restore_backup(tmp_path / "paired-devices.json.corrupt-404")
+
+
+# ── CLI recovery surface (parity wave 2 S2): list hints + devices restore ────
+
+
+def test_cli_devices_list_hints_when_a_corrupt_backup_exists(tmp_path, monkeypatch, capsys):
+    state = tmp_path / "state"
+    store = pairing.PairingStore(state, now=FakeClock())
+    minted = store.mint()
+    store.claim(minted["code"], "phone")
+    (state / "paired-devices.json.corrupt-1770000000").write_text("{}", encoding="utf-8")
+
+    assert run_cli(["devices", "list"], monkeypatch, state) == 0
+    out = capsys.readouterr().out
+    assert "paired-devices.json.corrupt-1770000000" in out
+    assert "devices restore" in out
+
+
+def test_cli_devices_list_hints_when_the_live_registry_is_corrupt(tmp_path, monkeypatch, capsys):
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / pairing.DEVICES_FILENAME).write_text("{broken", encoding="utf-8")
+
+    assert run_cli(["devices", "list"], monkeypatch, state) == 0
+    out = capsys.readouterr().out
+    assert "corrupt" in out
+
+
+def test_cli_devices_list_stays_hint_free_when_healthy(tmp_path, monkeypatch, capsys):
+    """Pin: a healthy registry keeps today's list output — no recovery
+    chatter, byte for byte."""
+    state = tmp_path / "state"
+    store = pairing.PairingStore(state, now=FakeClock())
+    minted = store.mint()
+    store.claim(minted["code"], "phone")
+
+    assert run_cli(["devices", "list"], monkeypatch, state) == 0
+    out = capsys.readouterr().out
+    assert "corrupt" not in out
+    assert "restore" not in out
+
+
+def test_cli_devices_restore_restores_and_audits(tmp_path, monkeypatch, capsys):
+    state = tmp_path / "state"
+    store = pairing.PairingStore(state, now=lambda: 1_000.0)
+    minted = store.mint(label="phone")
+    _, outcome = store.claim(minted["code"], "phone")
+    saved = json.loads((state / pairing.DEVICES_FILENAME).read_text(encoding="utf-8"))
+    name = "paired-devices.json.corrupt-1770000000"
+    (state / name).write_text(json.dumps(saved), encoding="utf-8")
+    (state / pairing.DEVICES_FILENAME).write_text("{corrupt", encoding="utf-8")
+
+    assert run_cli(["devices", "restore", name], monkeypatch, state) == 0
+    out = capsys.readouterr().out
+    assert "phone" in out
+    registry = json.loads((state / pairing.DEVICES_FILENAME).read_text(encoding="utf-8"))
+    assert registry == saved
+    audit = (state / "audit.log").read_text(encoding="utf-8")
+    assert "device.restore" in audit
+    assert name in audit
+
+
+def test_cli_devices_restore_refuses_an_invalid_backup(tmp_path, monkeypatch, capsys):
+    state = tmp_path / "state"
+    store = pairing.PairingStore(state, now=FakeClock())
+    minted = store.mint()
+    store.claim(minted["code"], "phone")
+    before = (state / pairing.DEVICES_FILENAME).read_bytes()
+    (state / "paired-devices.json.corrupt-1").write_text("{broken", encoding="utf-8")
+
+    assert run_cli(
+        ["devices", "restore", "paired-devices.json.corrupt-1"], monkeypatch, state
+    ) == 1
+    assert "error" in capsys.readouterr().err
+    assert (state / pairing.DEVICES_FILENAME).read_bytes() == before
+
+
+def test_cli_devices_restore_requires_a_name(tmp_path, monkeypatch, capsys):
+    assert run_cli(["devices", "restore"], monkeypatch, tmp_path / "state") == 2

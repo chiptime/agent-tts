@@ -408,6 +408,7 @@
     "pair.duplicate_label": "Ese nombre ya está en uso — elige otro.",
     "pair.generic_fail": "No se pudo emparejar ({reason}).",
     "pair.paired_toast": "Dispositivo emparejado — la escritura queda habilitada",
+    "pair.recovered": "El registro de dispositivos estaba corrupto: los emparejados anteriores pueden haberse perdido. Copia de seguridad guardada como «{backup}» — recupérala con `herdr-brain devices restore`.",
 
     /* ---- push card ---- */
     "push.title": "Avisos push",
