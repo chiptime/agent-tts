@@ -19,8 +19,10 @@ Route table (the contract between crew versions across machines):
     GET  /crew/v1/view?pane_id=
     GET  /crew/v1/history?pane_id=&…
     GET  /crew/v1/pane/{pane_id}/mirror?…
-    POST /crew/v1/pane/{pane_id}/reply        {"text"}
+    POST /crew/v1/pane/{pane_id}/reply        {"text"[, "steer": true]}
     POST /crew/v1/pane/{pane_id}/keys         {"keys"}
+    POST /crew/v1/pane/{pane_id}/receipt/submit    {"text_hint"[, "line_hint"]}
+    POST /crew/v1/pane/{pane_id}/receipt/discard   {"text_hint"[, "line_hint"]}
     POST /crew/v1/pane/{pane_id}/dialog/answer  {…}
     GET  /crew/v1/approval/current?pane_id=
     POST /crew/v1/approval/{gate_id}/action   {"decision"}
@@ -44,6 +46,8 @@ HANDLER_KEYS = (
     "mirror",
     "reply",
     "keys",
+    "receipt_submit",
+    "receipt_discard",
     "dialog_answer",
     "approval_current",
     "approval_action",
@@ -70,6 +74,12 @@ def _routes() -> dict:
         ("GET", "/crew/v1/pane/{pane}/mirror"): ("mirror", "pane_path_rest"),
         ("POST", "/crew/v1/pane/{pane}/reply"): ("reply", "pane_path_body"),
         ("POST", "/crew/v1/pane/{pane}/keys"): ("keys", "pane_path_body"),
+        ("POST", "/crew/v1/pane/{pane}/receipt/submit"): (
+            "receipt_submit", "pane_path_body",
+        ),
+        ("POST", "/crew/v1/pane/{pane}/receipt/discard"): (
+            "receipt_discard", "pane_path_body",
+        ),
         ("POST", "/crew/v1/pane/{pane}/dialog/answer"): ("dialog_answer", "pane_path_body"),
         ("GET", "/crew/v1/approval/current"): ("approval_current", "pane_query_rest"),
         ("POST", "/crew/v1/approval/{gate_id}/action"): ("approval_action", "gate_action"),

@@ -171,6 +171,48 @@ def test_pane_routes_deliver_pane_id_and_body(roster: CrewRoster) -> None:
     assert status == 200 and seen["reply"] == ("p-2", "hi")
 
 
+def test_reply_delivers_the_steer_flag_and_receipt_routes_reach_handlers(
+    roster: CrewRoster,
+) -> None:
+    seen = {}
+
+    def reply(pane_id, text, steer=False):
+        seen["reply"] = (pane_id, text, steer)
+        return {"ok": True, "pane_id": pane_id}
+
+    def receipt_submit(pane_id, text_hint, line_hint=""):
+        seen["submit"] = (pane_id, text_hint, line_hint)
+        return {"outcome": "sent", "detail": ""}
+
+    def receipt_discard(pane_id, text_hint, line_hint=""):
+        seen["discard"] = (pane_id, text_hint, line_hint)
+        return {"outcome": "discarded", "detail": ""}
+
+    service = make_service(roster, handlers={
+        "reply": reply, "receipt_submit": receipt_submit,
+        "receipt_discard": receipt_discard,
+    })
+    auth = (getter(headers(SECRET)), PEER_DER)
+
+    status, _ = service.handle(
+        "POST", "/crew/v1/pane/p-2/reply", None,
+        {"text": "hi", "steer": True}, *auth,
+    )
+    assert status == 200 and seen["reply"] == ("p-2", "hi", True)
+
+    status, payload = service.handle(
+        "POST", "/crew/v1/pane/p-2/receipt/submit", None,
+        {"text_hint": "t", "line_hint": "l"}, *auth,
+    )
+    assert status == 200 and seen["submit"] == ("p-2", "t", "l")
+
+    status, payload = service.handle(
+        "POST", "/crew/v1/pane/p-2/receipt/discard", None,
+        {"text_hint": "t"}, *auth,
+    )
+    assert status == 200 and seen["discard"] == ("p-2", "t", "")
+
+
 def test_approval_routes_reach_the_owner_handlers(roster: CrewRoster) -> None:
     seen = {}
 
