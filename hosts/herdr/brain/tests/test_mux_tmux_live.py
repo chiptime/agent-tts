@@ -38,6 +38,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -153,6 +154,42 @@ def scratch_server(tmp_path_factory):
 
 def _live_adapter(scratch_server) -> TmuxAdapter:
     return TmuxAdapter(bin_path=str(scratch_server.wrapper))
+
+
+@pytest.fixture(scope="module")
+def ptyattach(scratch_server):
+    """A helper that attaches a REAL interactive tmux client on a fresh
+    pty for a bounded window, then leaves (child terminated first)."""
+    import textwrap
+
+    helper = scratch_server.hexline.parent / "ptyattach.py"
+    helper.write_text(textwrap.dedent(
+        """
+        import os, pty, signal, subprocess, sys, time
+        secs = float(sys.argv[1]); cmd = sys.argv[2:]
+        master, slave = pty.openpty()
+        env = dict(os.environ, TERM="xterm")
+        child = subprocess.Popen(
+            cmd, stdin=slave, stdout=slave, stderr=slave,
+            env=env, preexec_fn=os.setsid,
+        )
+        os.close(slave)
+
+        def leave(*_args):
+            child.terminate()
+            try:
+                child.wait(timeout=3)
+            except Exception:
+                child.kill()
+            sys.exit(0)
+
+        signal.signal(signal.SIGTERM, leave)
+        time.sleep(secs)
+        leave()
+        """
+    ))
+    helper.chmod(0o755)
+    return helper
 
 
 class TestPromptExactText:
@@ -296,6 +333,90 @@ class TestSendTextNoEnter:
             assert BUFFER_PREFIX not in (buffers.stdout or "")
         finally:
             scratch_server.tmux("kill-session", "-t", session)
+
+
+class TestFocusCountsOnlyRealClients:
+    """Finding (live, tmux 3.8): control clients (``tmux -C``) count into
+    ``#{session_attached}``, so a program-only session looked "focused"
+    with no human watching. Focus requires an attached NON-control
+    client, cross-checked through ``list-clients``.
+
+    A real interactive client is spawned on a fresh pty (``ptyattach``
+    helper); a control client rides a held-open pipe. The ``scr`` pane
+    is the probe target throughout.
+    """
+
+    ATTACH_WINDOW_S = 6.0
+
+    def _focused_ids(self, adapter) -> set:
+        return {a.pane_id for a in adapter.list_agents() if a.focused}
+
+    def test_no_client_never_grounds_focus(self, scratch_server):
+        adapter = _live_adapter(scratch_server)
+        assert self._focused_ids(adapter) == set()
+
+    def test_control_client_does_not_ground_focus(self, scratch_server):
+        adapter = _live_adapter(scratch_server)
+        client = subprocess.Popen(
+            ["/bin/sh", "-c",
+             f"sleep {self.ATTACH_WINDOW_S:.0f} | "
+             f"{scratch_server.wrapper} -C attach -t scr >/dev/null 2>&1"],
+            env=dict(os.environ),
+        )
+        try:
+            seen_control_client = False
+            for _ in range(25):
+                listed = scratch_server.tmux(
+                    "list-clients", "-F", TmuxAdapter.LIST_CLIENTS_FORMAT
+                )
+                if "scr|1" in listed.stdout:
+                    seen_control_client = True
+                assert self._focused_ids(adapter) == set(), (
+                    "a control client grounded focus"
+                )
+                time.sleep(0.2)
+            # The probe was not vacuous: a control client WAS attached.
+            assert seen_control_client, "control client never showed up"
+        finally:
+            client.terminate()
+            client.wait(timeout=10)
+
+    def test_real_client_grounds_focus_and_losing_it_drops_focus(
+        self, scratch_server, ptyattach
+    ):
+        adapter = _live_adapter(scratch_server)
+        client = subprocess.Popen(
+            [sys.executable, str(ptyattach), f"{self.ATTACH_WINDOW_S:.0f}",
+             str(scratch_server.wrapper), "attach", "-t", "scr"],
+            env=dict(os.environ, TL_ARGV_LOG=str(scratch_server.argv_log)),
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        try:
+            grounded = False
+            for _ in range(30):
+                if "%0" in self._focused_ids(adapter):
+                    grounded = True
+                    break
+                time.sleep(0.2)
+            assert grounded, (
+                "a real attached client never grounded focus: "
+                + str(scratch_server.tmux(
+                    "list-clients", "-F", TmuxAdapter.LIST_CLIENTS_FORMAT
+                ).stdout)
+            )
+            # The client leaves after its window; focus drops with it.
+            client.wait(timeout=self.ATTACH_WINDOW_S + 20)
+            dropped = False
+            for _ in range(30):
+                if "%0" not in self._focused_ids(adapter):
+                    dropped = True
+                    break
+                time.sleep(0.2)
+            assert dropped, "focus outlived its client"
+        finally:
+            if client.poll() is None:
+                client.terminate()
+                client.wait(timeout=10)
 
 
 class TestCreateTabKeepsFocus:

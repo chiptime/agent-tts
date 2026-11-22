@@ -88,6 +88,12 @@ class TmuxAdapter:
         "\t#{pane_title}\t#{pane_active}\t#{window_active}\t#{session_attached}"
     )
 
+    #: ``tmux list-clients -F``: session name and the client's control
+    #: mode, one line per attached client. ``session_attached`` counts
+    #: control clients too, so this cross-check decides who is REALLY
+    #: watching a session.
+    LIST_CLIENTS_FORMAT = "#{session_name}|#{client_control_mode}"
+
     def __init__(
         self,
         bin_path: str = "tmux",
@@ -108,8 +114,8 @@ class TmuxAdapter:
             evidence=_EVIDENCE,
             facts={
                 # No watcher is armed in this port: every listing is a
-                # fresh list-panes call, so topology is at most one call
-                # (~1s) stale.
+                # fresh list-panes + list-clients pair, so topology is
+                # at most two calls (~1s) stale.
                 "topology_latency": "bounded:1000",
                 "spaces": "many",  # one grid per tmux session
             },
@@ -281,18 +287,45 @@ class TmuxAdapter:
 
     # -- reads ----------------------------------------------------------------
 
+    def _interactive_client_sessions(self) -> set:
+        """Sessions with at least one attached NON-control client.
+
+        Finding (live, tmux 3.8): control clients (``tmux -C``) count
+        into ``#{session_attached}`` — with one attached, a session
+        driven purely by a program looked "on screen" with no human
+        watching. ``session_control_clients`` does not exist as a
+        session-level format in tmux 3.8 (rendered empty while a
+        control client was attached), but the per-client
+        ``#{client_control_mode}`` does: only an explicit ``1`` marks a
+        control client, an empty or ``0`` mode is a real client.
+        """
+        proc = self._run_cli(
+            ["list-clients", "-F", self.LIST_CLIENTS_FORMAT], "pane_grid"
+        )
+        sessions = set()
+        for line in proc.stdout.splitlines():
+            fields = line.split("|")
+            if not fields or not fields[0]:
+                continue
+            if len(fields) < 2 or fields[1].strip() != "1":
+                sessions.add(fields[0])
+        return sessions
+
     def list_agents(self) -> List[AgentInfo]:
         proc = self._run_cli(["list-panes", "-a", "-F", self.LIST_FORMAT], "pane_grid")
+        interactive = self._interactive_client_sessions()
         agents: List[AgentInfo] = []
         for line in proc.stdout.splitlines():
             fields = line.split("\t")
             if len(fields) < 8:
                 continue
-            pane_id, _session, _window, cwd, title, pane_active, window_active, attached = (
+            pane_id, session, _window, cwd, title, pane_active, window_active, _attached = (
                 fields[:8]
             )
             focused = (
-                pane_active == "1" and window_active == "1" and attached not in ("", "0")
+                pane_active == "1"
+                and window_active == "1"
+                and session in interactive
             )
             agents.append(
                 AgentInfo(

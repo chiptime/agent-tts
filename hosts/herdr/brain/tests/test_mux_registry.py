@@ -283,6 +283,9 @@ class TestCompositeListingIntegration:
         runner = InlineRunner(
             (0, HERDR_LIST_JSON, ""),
             (0, TMUX_GRID, ""),
+            # tmux's listing cross-checks real clients (a control client
+            # never grounds focus); the session has one here.
+            (0, "main|0\n", ""),
             (0, ZELLIJ_JSON, ""),
         )
         return create_mux(

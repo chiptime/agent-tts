@@ -59,7 +59,8 @@ def adapter(runner: RecordedRunner, **kwargs) -> TmuxAdapter:
 class TestListAgents:
     def test_parses_recorded_grid(self):
         runner = RecordedRunner(
-            (("list-panes",), 0, fixture("tmux/list-panes.txt"), "")
+            (("list-panes",), 0, fixture("tmux/list-panes.txt"), ""),
+            (("list-clients",), 0, "main|0\n", ""),
         )
         agents = adapter(runner).list_agents()
         assert agents == [
@@ -75,7 +76,8 @@ class TestListAgents:
 
     def test_pins_exact_command_and_format_string(self):
         runner = RecordedRunner(
-            (("list-panes",), 0, fixture("tmux/list-panes.txt"), "")
+            (("list-panes",), 0, fixture("tmux/list-panes.txt"), ""),
+            (("list-clients",), 0, "main|0\n", ""),
         )
         adapter(runner).list_agents()
         assert runner.calls[0]["cmd"] == [
@@ -83,19 +85,71 @@ class TestListAgents:
         ]
         assert "#{pane_id}" in TmuxAdapter.LIST_FORMAT
         assert "#{session_attached}" in TmuxAdapter.LIST_FORMAT
+        # The client cross-check is its own pinned call: control mode per
+        # session decides who is really watching.
+        assert runner.calls[1]["cmd"] == [
+            "tmux-test", "list-clients", "-F", TmuxAdapter.LIST_CLIENTS_FORMAT,
+        ]
+        assert "#{client_control_mode}" in TmuxAdapter.LIST_CLIENTS_FORMAT
 
     def test_active_agent_picks_the_focused_pane(self):
         runner = RecordedRunner(
-            (("list-panes",), 0, fixture("tmux/list-panes.txt"), "")
+            (("list-panes",), 0, fixture("tmux/list-panes.txt"), ""),
+            (("list-clients",), 0, "main|0\n", ""),
         )
         active = adapter(runner).active_agent()
         assert active is not None and active.pane_id == "%3"
 
     def test_skips_malformed_lines(self):
         raw = "%3\tmain\t@1\t/repo\tt\t1\t1\t1\nnoise without tabs\n"
-        runner = RecordedRunner((("list-panes",), 0, raw, ""))
+        runner = RecordedRunner(
+            (("list-panes",), 0, raw, ""),
+            (("list-clients",), 0, "main|0\n", ""),
+        )
         agents = adapter(runner).list_agents()
         assert [a.pane_id for a in agents] == ["%3"]
+
+    def test_control_clients_never_ground_focus(self):
+        # Finding (live, tmux 3.8): a control client (``tmux -C``) counts
+        # into ``#{session_attached}`` — with one attached, ``main``'s
+        # pane looked "on screen" with no human watching. Only a
+        # non-control client grounds focus.
+        runner = RecordedRunner(
+            (("list-panes",), 0, fixture("tmux/list-panes.txt"), ""),
+            (("list-clients",), 0, "main|1\n", ""),
+        )
+        agents = adapter(runner).list_agents()
+        assert all(agent.focused is False for agent in agents)
+
+    def test_no_clients_at_all_never_grounds_focus(self):
+        runner = RecordedRunner(
+            (("list-panes",), 0, fixture("tmux/list-panes.txt"), ""),
+            (("list-clients",), 0, "", ""),
+        )
+        agents = adapter(runner).list_agents()
+        assert all(agent.focused is False for agent in agents)
+
+    def test_an_empty_control_mode_is_a_real_client(self):
+        # ``client_control_mode`` renders empty for regular clients on
+        # some tmux builds; only an explicit ``1`` is a control client.
+        runner = RecordedRunner(
+            (("list-panes",), 0, fixture("tmux/list-panes.txt"), ""),
+            (("list-clients",), 0, "main|\n", ""),
+        )
+        agents = adapter(runner).list_agents()
+        assert [a.focused for a in agents] == [True, False, False]
+
+    def test_client_listing_failure_propagates_unreachable(self):
+        # The server died between the two calls: refusing beats a silent
+        # all-unfocused lie — the reason stays retry-worthy.
+        runner = RecordedRunner(
+            (("list-panes",), 0, fixture("tmux/list-panes.txt"), ""),
+            (("list-clients",), 1, "",
+             "no server running on /tmp/tmux-1000/default"),
+        )
+        with pytest.raises(MuxRefusal) as excinfo:
+            adapter(runner).list_agents()
+        assert excinfo.value.reason == "unreachable"
 
 
 class TestReadScreen:
