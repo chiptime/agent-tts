@@ -10,6 +10,8 @@
 
 const test = require("node:test");
 const assert = require("node:assert");
+const { readFileSync } = require("node:fs");
+const { join } = require("node:path");
 
 /* The worker context: sw.js registers its listeners on `self` at load
  * and routes by origin against self.location. Node has no `self`, so
@@ -66,6 +68,25 @@ test("shellFromIndex on a raw dev index keeps bare URLs and build dev", () => {
   assert.equal(shell.build, "dev");
   assert.ok(shell.urls.includes("/"));
   assert.ok(shell.urls.includes("/app.js"));
+});
+
+test("every local script and link in the shipped index is precached", () => {
+  const html = readFileSync(join(__dirname, "../../src/herdr_brain/static/index.html"), "utf8");
+  // Enumerate independently of shellFromIndex: filtering through the worker
+  // first would hide the very omissions this test is checking for.
+  const refs = html.matchAll(/<(?:script|link)\s[^>]*?\b(?:src|href)\s*=\s*["']([^"']+)["']/gi);
+  const precached = new Set(sw.shellFromIndex(html).urls);
+  const missing = [...refs]
+    .map((ref) => new URL(ref[1], ORIGIN))
+    .filter((url) => url.origin === ORIGIN)
+    .map((url) => url.pathname + url.search)
+    .filter((url) => !precached.has(url));
+  assert.deepStrictEqual(missing, [], "Index assets missing from the precache");
+});
+
+test("call history data stays on the network with or without a query", () => {
+  assert.equal(sw.fetchPlan(new URL("/calls", ORIGIN), "GET"), "bypass");
+  assert.equal(sw.fetchPlan(new URL("/calls?limit=20", ORIGIN), "GET"), "bypass");
 });
 
 test("an empty or unparseable index still yields / with build dev", () => {
