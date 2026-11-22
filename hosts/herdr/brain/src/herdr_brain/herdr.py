@@ -72,6 +72,15 @@ MAX_SEND_KEYS = 8
 # never a multi-digit number: the tenth option stays out of reach).
 DIALOG_KEYS = frozenset({"enter", "esc", "left", "right", "up", "down", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"})
 
+# The LOWERCASE letters the GUARDED dialog-recipe path may send, and
+# ONLY when a dialog's own footer named that letter (the generic menu
+# grammar, menu_hints.menu_key_for). This set is deliberately NOT part
+# of SEND_KEY_ALLOWLIST: the raw `POST /pane/keys` route keeps its
+# letter-free gate, so a letter can only ever travel as part of a
+# recipe the guarded dialog answer re-derived from a fresh read after
+# the entry guard and a strict signature match.
+DIALOG_LETTER_KEYS = frozenset("abcdefghijklmnopqrstuvwxyz")
+
 
 def is_valid_key(key: str) -> bool:
     """Whether herdr's grammar accepts `key` (the verified subset)."""
