@@ -307,7 +307,14 @@ class TestSendTextNoEnter:
             return "".join("".join(rows).split())
 
         try:
+            focus_before = scratch_server.tmux(
+                "display-message", "-p", "-t", "scr", "#{window_id} #{pane_id}"
+            ).stdout.strip()
+            assert focus_before.endswith(scratch_server.pane)
             adapter.send_text(pane_id, payload)
+            assert scratch_server.tmux(
+                "display-message", "-p", "-t", "scr", "#{window_id} #{pane_id}"
+            ).stdout.strip() == focus_before
             # NO Enter rode with the typing: the line is unterminated, so
             # the instrument cannot have printed — the payload may sit on
             # the grid as tty echo, but no hex row may exist.

@@ -657,6 +657,14 @@ class TestRefusedSurfaces:
 
 
 class TestFailureMapping:
+    def test_server_killed_during_command_is_unreachable(self):
+        runner = RecordedRunner(
+            (("capture-pane",), 1, "", "server exited unexpectedly\n")
+        )
+        with pytest.raises(MuxRefusal) as excinfo:
+            adapter(runner).read_screen("%3")
+        assert excinfo.value.reason == "unreachable"
+
     def test_no_server_running_is_unreachable(self):
         runner = RecordedRunner(
             (("list-panes",), 1, "", "no server running on /tmp/tmux-1000/default")

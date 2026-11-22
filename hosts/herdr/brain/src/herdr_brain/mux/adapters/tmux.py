@@ -69,7 +69,11 @@ _EVIDENCE = {
 def _exit_reason(detail: str) -> str:
     """Maps a tmux failure text onto the refusal vocabulary."""
     text = detail.lower()
-    if "no server running" in text or "error connecting" in text:
+    if (
+        "no server running" in text
+        or "error connecting" in text
+        or text == "server exited unexpectedly"
+    ):
         return "unreachable"
     if "can't find pane" in text or "can't find window" in text:
         return "gone"
@@ -193,20 +197,22 @@ class TmuxAdapter:
     #: sends in one server collision-free.
     PASTE_BUFFER_PREFIX = "herdr-paste-"
 
-    def _submit_line(self, pane_id: str, text: str, capability: str) -> None:
-        """Delivers one literal line via a private paste buffer, then Enter.
+    def _paste_text(
+        self, pane_id: str, text: str, capability: str, *, submit: bool
+    ) -> None:
+        """Delivers one literal line via a private buffer, optionally with Enter.
 
         Finding C (live, tmux 3.8 isolated probe): ``send-keys -l``
         silently dropped a trailing ``;`` while still exiting 0, and the
         receipt even read ``sent`` on the altered write. The exact bytes
         therefore never ride argv — argv is a surface tmux 3.8 can alter;
-        stdin is not.         ``load-buffer`` pulls the text from stdin into a PRIVATE uniquely
+        stdin is not. ``load-buffer`` pulls the text from stdin into a PRIVATE uniquely
         named buffer (never a default ``0``..``9`` buffer, never a foreign
         name), ``paste-buffer -d -S`` inserts it byte-exact into the
         TARGET pane by id (``-S`` keeps tmux from vis-escaping control
         characters, matching the raw bytes ``send-keys -l`` used to
         deliver) and ``-d`` deletes the buffer in the same operation, and
-        the submit rides the SAME client invocation as tmux's ``;``
+        any submit rides the SAME client invocation with tmux's ``;``
         separator — the payload text only ever rides stdin, and one
         invocation narrows the window in which another client's command
         could run between the paste and the Enter. A best-effort
@@ -216,16 +222,15 @@ class TmuxAdapter:
         Only buffers this operation created are ever touched.
         """
         buffer_name = f"{self.PASTE_BUFFER_PREFIX}{uuid.uuid4().hex}"
+        paste = ["paste-buffer", "-d", "-S", "-b", buffer_name, "-t", pane_id]
+        if submit:
+            paste.extend([";", "send-keys", "-t", pane_id, "Enter"])
         try:
             self._run_cli(
                 ["load-buffer", "-b", buffer_name, "-"], capability,
                 input_text=text,
             )
-            self._run_cli(
-                ["paste-buffer", "-d", "-S", "-b", buffer_name, "-t", pane_id,
-                 ";", "send-keys", "-t", pane_id, "Enter"],
-                capability,
-            )
+            self._run_cli(paste, capability)
         finally:
             self._delete_paste_buffer(buffer_name, capability)
 
@@ -391,7 +396,7 @@ class TmuxAdapter:
         clean = (command or "").strip()
         if not clean:
             raise HerdrError("refusing to run an empty command")
-        self._submit_line(pane_id, clean, "keys")
+        self._paste_text(pane_id, clean, "keys", submit=True)
 
     def send_prompt(self, pane_id: str, text: str, timeout_ms: Optional[int] = None) -> dict:
         clean = sanitize_prompt_text(text)
@@ -404,7 +409,7 @@ class TmuxAdapter:
         # screen stays honestly `unknown` instead of upgrading to
         # `sent`, and `effective` is never claimed.
         before = self._verified_read(pane_id)
-        self._submit_line(pane_id, clean, "prompt_submit")
+        self._paste_text(pane_id, clean, "prompt_submit", submit=True)
         afters = self._verified_poll_reads(pane_id, before, clean)
         outcome, detail = classify_send(before, afters, clean, "unknown")
         return {"ok": outcome in ("effective", "sent"), "status": outcome, "output": detail}
@@ -425,27 +430,7 @@ class TmuxAdapter:
         clean = sanitize_prompt_text(text)
         if not clean:
             raise HerdrError("refusing to send empty text")
-        self._type_text(pane_id, clean)
-
-    def _type_text(self, pane_id: str, text: str) -> None:
-        """Delivers literal bytes WITHOUT submitting: ``_submit_line``
-        minus the Enter. Same private-buffer pipeline (stdin for the
-        bytes, ``paste-buffer -d -S`` into the TARGET pane, best-effort
-        delete), and nothing after the paste: no submit ride, no shell
-        in between.
-        """
-        buffer_name = f"{self.PASTE_BUFFER_PREFIX}{uuid.uuid4().hex}"
-        try:
-            self._run_cli(
-                ["load-buffer", "-b", buffer_name, "-"], "send_text",
-                input_text=text,
-            )
-            self._run_cli(
-                ["paste-buffer", "-d", "-S", "-b", buffer_name, "-t", pane_id],
-                "send_text",
-            )
-        finally:
-            self._delete_paste_buffer(buffer_name, "send_text")
+        self._paste_text(pane_id, clean, "send_text", submit=False)
 
     def create_tab(self, label: str, cwd: Optional[str] = None) -> dict:
         # Finding (live, tmux 3.8 isolated probe): ``new-window`` without
