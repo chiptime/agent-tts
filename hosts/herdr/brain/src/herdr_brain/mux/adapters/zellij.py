@@ -263,6 +263,16 @@ class ZellijAdapter:
         )
 
     def list_agents(self) -> List[AgentInfo]:
+        return self._listed_agents()
+
+    def _listed_agents(self) -> List[AgentInfo]:
+        """One fresh ``action list-panes`` roundtrip, parsed and filtered.
+
+        Shared by the mirror and the S12 A1 write guard: the listing is
+        the ONE honest oracle zellij offers — actions exit 0 for a pane
+        that does not exist, so a pane's existence is a LISTING answer,
+        never an exit code.
+        """
         proc = self._run_cli(list(_LIST_PANES), "pane_grid")
         raw = (proc.stdout or "").strip()
         if not raw:
@@ -336,6 +346,17 @@ class ZellijAdapter:
         set, translated through the neutral orthography — and a CLI
         failure returns ``{ok: False}`` instead of raising, exactly
         like the tmux and herdr adapters.
+
+        S12 A1: the exit code cannot vouch this write — a nonexistent
+        pane answers exit 0 silently (the live-pinned honesty edge).
+        The pane is therefore verified against a FRESH listing
+        (``action list-panes``, the same roundtrip the mirror rides)
+        BEFORE the send — a miss refuses ``gone`` and the keys are
+        never spawned at a vanished target — and again AFTER, where a
+        vanishing pane keeps the reply ``ok: False`` with the outcome
+        stated as unknown: the keys may or may not have landed before
+        the pane died. ``ok: True`` is possible only when the pane
+        answers both listings with the send between them.
         """
         unsupported = sorted({key for key in keys if not is_sendable_key(key)})
         if unsupported:
@@ -352,9 +373,25 @@ class ZellijAdapter:
             )
         translated = [zellij_key(normalize_key(key)) for key in keys]
         try:
+            if pane_id not in {agent.pane_id for agent in self._listed_agents()}:
+                return {
+                    "ok": False,
+                    "error": (
+                        f"mux gone (keys): pane {pane_id} is not listed by "
+                        "zellij; send-keys not attempted"
+                    ),
+                }
             self._run_cli(
                 ["action", "send-keys", "--pane-id", pane_id, *translated], "keys"
             )
+            if pane_id not in {agent.pane_id for agent in self._listed_agents()}:
+                return {
+                    "ok": False,
+                    "error": (
+                        f"mux gone (keys): pane {pane_id} vanished around the "
+                        "send; the keys may or may not have landed (unknown)"
+                    ),
+                }
         except HerdrError as exc:
             return {"ok": False, "error": str(exc)}
         return {"ok": True, "error": ""}

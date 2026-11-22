@@ -322,3 +322,13 @@ class TestLiveWrites:
             "output": "sin evidencia suficiente para clasificar el envío",
         }
         assert adapter.send_text("9999", "nowhere") is None
+
+    def test_send_keys_to_a_nonexistent_pane_never_claims_ok(self, live_session):
+        # S12 A1 live: `send-keys` to a pane that does not exist exits
+        # 0 silently, so the adapter verifies the pane against the
+        # session's own listing first — a miss refuses `gone` and the
+        # keys are NEVER spawned at the silent void.
+        adapter = live_session.adapter()
+        result = adapter.send_keys("9999", ["enter"])
+        assert result["ok"] is False, result
+        assert "gone" in result["error"], result

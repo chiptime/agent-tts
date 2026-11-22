@@ -160,30 +160,56 @@ class TestSendKeys:
     are capitalized (``Enter``, ``Esc``, ``Up``) and chords are
     SPACE-separated (``Ctrl u``); ``Ctrl+u`` exits 2 with ``Invalid
     key``. The allowlist guard runs BEFORE any spawn, exactly like the
-    tmux adapter's."""
+    tmux adapter's.
+
+    S12 A1: a send that exits 0 proves nothing on zellij — a
+    nonexistent pane answers exit 0 silently (live-pinned edge). The
+    adapter therefore verifies the pane against a FRESH
+    ``action list-panes`` listing before the send (a miss refuses
+    ``gone`` without spawning the write) and again after (a vanishing
+    pane downgrades the reply to an honest unknown), so ``ok: True``
+    is only ever returned with the pane answering both listings.
+    """
+
+    LIST = ("action", "list-panes")
 
     def test_translates_neutral_spelling_to_zellij(self):
-        runner = RecordedRunner((("action", "send-keys"), 0, "", ""))
+        runner = RecordedRunner(
+            (self.LIST, 0, fixture("zellij/list-panes.json"), ""),
+            (("action", "send-keys"), 0, "", ""),
+            (self.LIST, 0, fixture("zellij/list-panes.json"), ""),
+        )
         result = adapter(runner).send_keys("1", ["down", "Enter"])
         assert result == {"ok": True, "error": ""}
         assert runner.calls[0]["cmd"] == [
+            "zellij-test", "action", "list-panes", "--all", "--json",
+        ]
+        assert runner.calls[1]["cmd"] == [
             "zellij-test", "action", "send-keys", "--pane-id", "1",
             "Down", "Enter",
         ]
 
     def test_chords_are_space_separated_in_zellij(self):
-        runner = RecordedRunner((("action", "send-keys"), 0, "", ""))
+        runner = RecordedRunner(
+            (self.LIST, 0, fixture("zellij/list-panes.json"), ""),
+            (("action", "send-keys"), 0, "", ""),
+            (self.LIST, 0, fixture("zellij/list-panes.json"), ""),
+        )
         adapter(runner).send_keys("1", ["ctrl+u", "ctrl+k"])
-        assert runner.calls[0]["cmd"] == [
+        assert runner.calls[1]["cmd"] == [
             "zellij-test", "action", "send-keys", "--pane-id", "1",
             "Ctrl u", "Ctrl k",
         ]
 
     def test_digits_are_literal_characters(self):
-        runner = RecordedRunner((("action", "send-keys"), 0, "", ""))
+        runner = RecordedRunner(
+            (self.LIST, 0, fixture("zellij/list-panes.json"), ""),
+            (("action", "send-keys"), 0, "", ""),
+            (self.LIST, 0, fixture("zellij/list-panes.json"), ""),
+        )
         result = adapter(runner).send_keys("1", ["1"])
         assert result == {"ok": True, "error": ""}
-        assert runner.calls[0]["cmd"][-1] == "1"
+        assert runner.calls[1]["cmd"][-1] == "1"
 
     def test_rejects_non_dialog_keys_before_any_spawn(self):
         runner = RecordedRunner()
@@ -201,13 +227,55 @@ class TestSendKeys:
             mux.send_keys("1", [])
         with pytest.raises(MuxRefusal, match="too many keys"):
             mux.send_keys("1", ["up"] * 9)
-        assert runner.calls == []
+        assert runner.calls == []  # and before any listing
 
     def test_cli_failure_returns_not_ok_and_never_raises(self):
-        runner = RecordedRunner((("action", "send-keys"), 1, "", "boom"))
+        runner = RecordedRunner(
+            (self.LIST, 0, fixture("zellij/list-panes.json"), ""),
+            (("action", "send-keys"), 1, "", "boom"),
+        )
         result = adapter(runner).send_keys("1", ["enter"])
         assert result["ok"] is False
         assert "boom" in result["error"]
+
+    def test_unlisted_pane_refuses_gone_without_sending(self):
+        # S12 A1 RED: a nonexistent pane would get `send-keys` spawned
+        # at it (exiting 0 silently) and answer `ok: True`. The fresh
+        # listing is the honest oracle: a miss refuses `gone` and the
+        # keys are never spawned at a target zellij does not list.
+        runner = RecordedRunner(
+            (self.LIST, 0, fixture("zellij/list-panes.json"), ""),
+        )
+        result = adapter(runner).send_keys("999", ["enter"])
+        assert result["ok"] is False
+        assert "gone" in result["error"]
+        assert "999" in result["error"]
+        assert len(runner.calls) == 1 and "list-panes" in runner.calls[0]["cmd"]
+
+    def test_pane_vanishing_between_checks_is_never_ok(self):
+        # S12 A1 RED: pane present at the pre-listing, gone at the
+        # post-listing — the send ran into a dying pane, so the keys
+        # may or may not have landed. Honesty here is `ok: False`
+        # (unknown), never a fabricated positive.
+        runner = RecordedRunner(
+            (self.LIST, 0, fixture("zellij/list-panes.json"), ""),
+            (("action", "send-keys"), 0, "", ""),
+            (self.LIST, 0, "", ""),  # fresh listing: empty after the vanish
+        )
+        result = adapter(runner).send_keys("1", ["enter"])
+        assert result["ok"] is False
+        assert "unknown" in result["error"]
+
+    def test_listing_failure_is_never_ok(self):
+        # S12 A1 RED: without a listing there is no oracle at all, so a
+        # vanished zellij session can never fabricate `ok: True` — the
+        # failure keeps the client-side context (unreachable).
+        runner = RecordedRunner(
+            (self.LIST, 1, "", "There is no active session!"),
+        )
+        result = adapter(runner).send_keys("1", ["enter"])
+        assert result["ok"] is False
+        assert "unreachable" in result["error"]
 
 
 class TestSendPrompt:
@@ -553,6 +621,7 @@ class TestFailureMapping:
 
     def test_selection_error_is_not_a_successful_key_write(self):
         runner = RecordedRunner(
+            (("action", "list-panes"), 0, fixture("zellij/list-panes.json"), ""),
             (("action", "send-keys"), 0, "other\n",
              "Please specify the session name to send actions to. "
              "The following sessions are active:\n")
