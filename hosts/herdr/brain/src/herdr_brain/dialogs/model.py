@@ -39,8 +39,11 @@ from typing import Optional, Tuple
 #: multi-question call (answering may advance to the next step);
 #: ``model_picker`` is a /model selector — walk-class ALWAYS, because
 #: in these lists a digit confirms and rewrites the default model
-#: (ADR 0009): the only recipe is the arrows plus Enter.
-KINDS = ("select", "multiselect", "confirm", "permission", "wizard_step", "model_picker")
+#: (ADR 0009): the only recipe is the arrows plus Enter. ``menu`` is
+#: the LAST-RESORT generic modal: it owns no dialogue recipe of its
+#: own and its options are exactly the keys the screen's tail footer
+#: printed (never a digit, ADR 0009 — see dialogs.menu_hints).
+KINDS = ("select", "multiselect", "confirm", "permission", "wizard_step", "model_picker", "menu")
 
 
 @dataclass(frozen=True)
@@ -79,6 +82,10 @@ class DialogOption:
     #: provider name, or the group header the row sits under). Display
     #: only; empty when unknown.
     provider: str = ""
+    #: menu only: the Esc segment of the footer — the dialog's way OUT,
+    #: not a peer answering action. Rides the payload only when True so
+    #: every other option keeps its exact previous shape.
+    cancel: bool = False
 
 
 @dataclass(frozen=True)
@@ -118,6 +125,16 @@ class StructuredDialog:
     unread: bool = False
     #: Why it cannot be read, when it cannot.
     detail: str = ""
+    #: menu only, model-only facts (Q2: no buttons in this unit): the
+    #: ``←/→ to <verb>`` row the screen advertised — the verb, the
+    #: current value the arrows act on, and the ordered scale when the
+    #: screen printed it. The arrows themselves stay on the manual
+    #: keypad; these fields are recorded so a later unit can wire the
+    #: adjust walk without changing the model again. Empty/absent when
+    #: the screen named no such row.
+    adjust_verb: str = ""
+    adjust_label: str = ""
+    adjust_values: Tuple[str, ...] = ()
 
     def payload(self) -> dict:
         """The /view shape: everything the PWA renders, nothing it may
@@ -147,6 +164,24 @@ class StructuredDialog:
                 if self.step_number is not None and self.step_total is not None
                 else {}
             ),
+            # Additive on purpose (menu, Q2): the leftRight affordance
+            # the screen advertised — display facts only, never a
+            # button.
+            **(
+                {
+                    "adjust": {
+                        "verb": self.adjust_verb,
+                        "label": self.adjust_label,
+                        **(
+                            {"values": list(self.adjust_values)}
+                            if self.adjust_values
+                            else {}
+                        ),
+                    }
+                }
+                if self.adjust_verb
+                else {}
+            ),
             "hint": self.hint,
             "fingerprint": self.fingerprint,
             "recipe": "keys" if any(option.keys for option in self.options) else "walk",
@@ -155,18 +190,22 @@ class StructuredDialog:
                     "label": option.label,
                     "description": option.description,
                     "checked": option.checked,
-                    # Additive on purpose (S3): the flag rides along
-                    # ONLY on the rows that carry it, so every payload
-                    # without a free-text row keeps its exact shape.
-                    **({"free_text": True} if option.free_text else {}),
-                    # Additive on purpose (opencode picker): the ● row
-                    # rides along ONLY when the picker marked it.
-                    **({"current": True} if option.current else {}),
-                    # Additive on purpose (opencode picker): the clean
-                    # model name and provider ride along ONLY on rows
-                    # that carry them.
-                    **({"model": option.model} if option.model else {}),
-                    **({"provider": option.provider} if option.provider else {}),
+            # Additive on purpose (S3): the flag rides along
+            # ONLY on the rows that carry it, so every payload
+            # without a free-text row keeps its exact shape.
+            **({"free_text": True} if option.free_text else {}),
+            # Additive on purpose (opencode picker): the ● row
+            # rides along ONLY when the picker marked it.
+            **({"current": True} if option.current else {}),
+            # Additive on purpose (opencode picker): the clean
+            # model name and provider ride along ONLY on rows
+            # that carry them.
+            **({"model": option.model} if option.model else {}),
+            **({"provider": option.provider} if option.provider else {}),
+            # Additive on purpose (menu): the Esc segment's flag
+            # rides along ONLY when the footer named it as the way
+            # out.
+            **({"cancel": True} if option.cancel else {}),
                 }
                 for option in self.options
             ],
