@@ -935,8 +935,13 @@
     title.textContent = t("spaces.title");
     convSpacesEl.appendChild(title);
     convSpacesBody = document.createElement("div");
+    /* ONE sideways-scrolling row: wrapping chips grew with the space
+     * count and, as a non-shrinking child of the 60dvh sheet, squeezed
+     * #conv-list to nothing on a phone. */
     convSpacesBody.style.cssText =
-      "display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;";
+      "display:flex;flex-wrap:nowrap;gap:8px;margin-top:8px;" +
+      "overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;" +
+      "padding-bottom:2px;";
     convSpacesEl.appendChild(convSpacesBody);
     convList.parentNode.insertBefore(convSpacesEl, convList);
   }
@@ -979,7 +984,8 @@
       "min-height:44px;padding:8px 12px;font-size:14px;font-weight:600;" +
       "color:var(--text);background:var(--chip-bg);border:1px solid " +
       (space.focused ? "var(--accent)" : "var(--line)") +
-      ";border-radius:10px;display:inline-flex;align-items:center;gap:6px;";
+      ";border-radius:10px;display:inline-flex;align-items:center;gap:6px;" +
+      "flex:0 0 auto;white-space:nowrap;";
     btn.setAttribute("data-space", space.workspace_id);
     if (space.cwd) btn.title = space.cwd;
     /* Text node only: labels are server data, never markup. */

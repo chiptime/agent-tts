@@ -149,7 +149,7 @@ EXPECTED_DIGESTS = {
     # (stopFailureToast pure block) branches on the server's stable
     # dialog_open reason.
     # Parity-w2 S8: history search and the adaptive state poll.
-    "/app.js": "0ec770543e8a4fbd9ad4a74495c1f6b9ede2467b4127db039e71f3feb59adbd8",
+    "/app.js": "84ee05e073410a60278b51210b9ccfa3bd2a345f24a79841ecae8bf2c0696999",
     "/history.js": "fa3526827b3e791bdc8f5950e398f3e318a2bff1c85ba684f0231d22d74e08d9",
     "/push.js": "e1acadd98d95420cf9924ea633b32d9ec5b51c8654c5e7df923c2bbc5547f52c",
     "/receipts.js": "df01a313d8f6101bd9601d5a2a65eb420df7791c417a09e2d0d8c269a36742b0",
