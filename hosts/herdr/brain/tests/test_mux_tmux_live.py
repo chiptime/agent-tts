@@ -235,6 +235,69 @@ class TestPromptExactBytes:
             scratch_server.tmux("kill-session", "-t", session)
 
 
+class TestSendTextNoEnter:
+    """parity wave 2 S5: ``send_text`` types WITHOUT pressing Enter.
+
+    The discriminator is the ``hexline`` instrument pane: it only prints
+    on a terminated line, so if the adapter's typing path pressed Enter
+    (or the bytes never arrived), the hex evidence shows it. Typed bytes
+    are echoed by the tty line discipline as raw text — the hex-row
+    filter ignores those non-hex rows.
+
+    A bounded negative wait is deterministic here: no Enter was pressed,
+    so no amount of slowness produces hex output — only a submit would.
+    """
+
+    def test_bytes_reach_the_pane_only_after_enter(self, scratch_server):
+        adapter = _live_adapter(scratch_server)
+        session = f"text{uuid.uuid4().hex[:8]}"
+        made = scratch_server.tmux(
+            "new-session", "-d", "-s", session, str(scratch_server.hexline)
+        )
+        assert made.returncode == 0, made.stderr
+        panes = scratch_server.tmux("list-panes", "-F", "#{pane_id}", "-t", session)
+        pane_id = panes.stdout.strip().splitlines()[0]
+        payload = 'rm -rf \'$(whoami)\' "q" `calc` && true;'
+        expected_hex = (payload + "\n").encode("utf-8").hex()
+
+        def hex_rows() -> str:
+            grid = adapter.read_screen(pane_id)
+            rows = [
+                row.strip()
+                for row in grid.splitlines()
+                if re.match(TestPromptExactBytes._HEX_ROW, row.strip())
+            ]
+            return "".join("".join(rows).split())
+
+        try:
+            adapter.send_text(pane_id, payload)
+            # NO Enter rode with the typing: the line is unterminated, so
+            # the instrument cannot have printed — the payload may sit on
+            # the grid as tty echo, but no hex row may exist.
+            for _ in range(20):
+                assert not hex_rows(), "typing submitted: instrument printed"
+                time.sleep(0.1)
+            # The dialog recipe's commit: Enter is pressed SEPARATELY.
+            committed = adapter.send_keys(pane_id, ["enter"])
+            assert committed["ok"] is True, committed
+            received = ""
+            for _ in range(50):
+                received = hex_rows()
+                if received.endswith(expected_hex):
+                    break
+                time.sleep(0.1)
+            # The exact bytes arrived — the trailing `;` included — and
+            # NOTHING more: typing added no byte of its own.
+            assert received.endswith(expected_hex), received
+            # The text never rode argv through any adapter call.
+            assert payload not in scratch_server.argv_log.read_text()
+            # No private buffer left behind.
+            buffers = scratch_server.tmux("list-buffers", "-F", "#{buffer_name}")
+            assert BUFFER_PREFIX not in (buffers.stdout or "")
+        finally:
+            scratch_server.tmux("kill-session", "-t", session)
+
+
 class TestCreateTabKeepsFocus:
     """Finding: `new-window` without `-d` moved the session's active window."""
 

@@ -10,7 +10,9 @@ Reads ride ``capture-pane`` (styled with ``-e``, history with
 ``-S -<n>``); writes deliver text through a PRIVATE paste buffer — the
 exact bytes travel by stdin (``load-buffer <name> -``), are pasted
 byte-exact into the target pane (``paste-buffer -d -S``) and the buffer
-is deleted, with ``send-keys`` reduced to the ``Enter`` key. No shell
+is deleted, with ``send-keys`` reduced to the ``Enter`` key — and
+(parity wave 2 S5) bare typing with NO submit at all (``send_text``):
+the same private-buffer pipeline with nothing after the paste. No shell
 ever sits between the brain and the pane, and the text never rides argv:
 tmux 3.8 drops a trailing ``;`` from ``send-keys -l`` while still
 exiting 0 (live probe in ``tests/test_mux_tmux_live.py``), so argv is
@@ -375,12 +377,42 @@ class TmuxAdapter:
         return {"ok": outcome in ("effective", "sent"), "status": outcome, "output": detail}
 
     def send_text(self, pane_id: str, text: str) -> None:
-        raise MuxRefusal(
-            "unsupported", "send_text",
-            "bare text typing is herdr's pinned pane send-text surface; "
-            "tmux's verified writes always submit, so typing without "
-            "Enter is refused rather than approximated",
-        )
+        """Types literal text WITHOUT Enter (parity wave 2 S5).
+
+        The operator opened this surface deliberately: tmux's
+        ``paste-buffer`` can deliver text with no submit, so refusing it
+        was refusing something tmux verifiably does. It rides the SAME
+        exact path the verified submit rides (private buffer, text on
+        stdin, never argv — the T7 fix), minus the Enter: typing only.
+        Sanitized to ONE line exactly like herdr's ``send_text`` (a
+        literal newline would submit the field early), empty refused
+        before any spawn, and a CLI failure raises — the dialog recipe
+        re-reads the screen itself, so no receipt is fabricated here.
+        """
+        clean = sanitize_prompt_text(text)
+        if not clean:
+            raise HerdrError("refusing to send empty text")
+        self._type_text(pane_id, clean)
+
+    def _type_text(self, pane_id: str, text: str) -> None:
+        """Delivers literal bytes WITHOUT submitting: ``_submit_line``
+        minus the Enter. Same private-buffer pipeline (stdin for the
+        bytes, ``paste-buffer -d -S`` into the TARGET pane, best-effort
+        delete), and nothing after the paste: no submit ride, no shell
+        in between.
+        """
+        buffer_name = f"{self.PASTE_BUFFER_PREFIX}{uuid.uuid4().hex}"
+        try:
+            self._run_cli(
+                ["load-buffer", "-b", buffer_name, "-"], "send_text",
+                input_text=text,
+            )
+            self._run_cli(
+                ["paste-buffer", "-d", "-S", "-b", buffer_name, "-t", pane_id],
+                "send_text",
+            )
+        finally:
+            self._delete_paste_buffer(buffer_name, "send_text")
 
     def create_tab(self, label: str, cwd: Optional[str] = None) -> dict:
         # Finding (live, tmux 3.8 isolated probe): ``new-window`` without

@@ -429,6 +429,77 @@ class TestSendPrompt:
         assert result["ok"] is True
 
 
+class TestSendText:
+    """parity wave 2 S5 (operator choice «Admitir»): bare text typing is
+    enabled over the T7 exact path — the exact bytes ride a PRIVATE paste
+    buffer by stdin (never argv, so tmux 3.8 cannot swallow a trailing
+    ``;``), and NO Enter is pressed: typing only, the caller commits.
+
+    The contract mirrors herdr's ``send_text`` (the specification the
+    other adapters are measured against): sanitized to ONE line, empty
+    refused before any spawn, and a CLI failure raises instead of
+    returning a receipt — the dialog recipe re-reads the screen itself.
+    """
+
+    def test_types_exact_bytes_without_enter(self):
+        payload = "draft $answer \"with quotes\" `and backticks`;"
+        runner = RecordedRunner(
+            (("load-buffer",), 0, "", ""),
+            (("paste-buffer",), 0, "", ""),
+            (("delete-buffer",), 0, "", ""),
+        )
+        adapter(runner).send_text("%3", payload)
+        load, paste, delete = runner.calls
+        name = load["cmd"][3]
+        assert name.startswith("herdr-paste-")
+        # The exact bytes — trailing `;` included — ride stdin, not argv.
+        assert load["cmd"] == ["tmux-test", "load-buffer", "-b", name, "-"]
+        assert load["input"] == payload
+        # Typing only: the paste invocation carries NO submit tail.
+        assert paste["cmd"] == [
+            "tmux-test", "paste-buffer", "-d", "-S", "-b", name, "-t", "%3",
+        ]
+        # The private buffer is cleaned up afterwards.
+        assert delete["cmd"] == ["tmux-test", "delete-buffer", "-b", name]
+        # No call ever carries the payload inside argv.
+        assert not any(payload in " ".join(c["cmd"]) for c in runner.calls)
+
+    def test_paste_failure_propagates_and_cleans_up(self):
+        runner = RecordedRunner(
+            (("load-buffer",), 0, "", ""),
+            (("paste-buffer",), 1, "", "can't find pane: %9"),
+            (("delete-buffer",), 0, "", ""),
+        )
+        with pytest.raises(MuxRefusal) as excinfo:
+            adapter(runner).send_text("%9", "hi;")
+        assert excinfo.value.reason == "gone"
+        assert excinfo.value.capability == "send_text"
+        # Only the buffer this operation created is cleaned up.
+        name = runner.calls[0]["cmd"][3]
+        assert runner.calls[2]["cmd"] == ["tmux-test", "delete-buffer", "-b", name]
+        # Nothing was pasted and nothing more happened: no submit ride.
+        assert [c["cmd"][1] for c in runner.calls] == [
+            "load-buffer", "paste-buffer", "delete-buffer",
+        ]
+
+    def test_multiline_text_is_sanitized_before_the_write(self):
+        # A literal newline is a real Enter in the pane: typing must
+        # never submit by accident, so text is sanitized to ONE line.
+        runner = RecordedRunner(
+            (("load-buffer",), 0, "", ""),
+            (("paste-buffer",), 0, "", ""),
+            (("delete-buffer",), 0, "", ""),
+        )
+        adapter(runner).send_text("%3", "línea uno\nlínea dos")
+        assert runner.calls[0]["input"] == "línea uno línea dos"
+
+    def test_empty_text_refused_without_invoking(self):
+        runner = RecordedRunner()
+        with pytest.raises(HerdrError, match="empty"):
+            adapter(runner).send_text("%3", "  ")
+        assert runner.calls == []
+
+
 class TestProbe:
     """Finding A (live, tmux 3.8 scratch server): ``-V`` answers with NO
     server — a wrapper pointed at a nonexistent socket still prints the
