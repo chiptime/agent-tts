@@ -151,3 +151,17 @@ def test_conversation_sheet_reaches_the_viewport_floor(phone_app):
     )
     assert geo["sheetBottom"] >= geo["vh"] - 2, geo
     assert geo["coversFooter"], geo
+
+
+def test_conversation_sheet_is_tall_on_a_phone(phone_app):
+    """With enough rows the sheet grows to 85% of the viewport height."""
+    page = phone_app.page
+    open_conv_sheet(page)
+    page.wait_for_timeout(350)
+    geo = page.evaluate(
+        """() => ({
+            vh: window.innerHeight,
+            maxH: parseFloat(getComputedStyle(document.getElementById('conv-sheet')).maxHeight),
+        })"""
+    )
+    assert abs(geo["maxH"] - 0.85 * geo["vh"]) <= 2, geo

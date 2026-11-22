@@ -109,7 +109,7 @@ EXPECTED_DIGESTS = {
     # i18n gain herd.peer_unreachable. app.js, index.html (/) and both
     # i18n re-pinned below.
     # Parity-w2 S8: loaded-history search controls and highlights.
-    "/": "5d5e09c26aab3bf10fae759d3a99015cac7c712dbc1220c2584b3057f84a23ae",
+    "/": "ea91f5186a55cb1730be81ccb8d616d5cd886d0f509a7c64bbc94fef065d8c74",
     # send-track.js re-pinned for the correction batch (f7g): the
     # per-receipt seq guard (a lower seq is a stale delivery, ignored),
     # a start for an already-known receipt never regresses it, and a

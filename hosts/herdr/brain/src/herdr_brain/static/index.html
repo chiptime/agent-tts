@@ -232,9 +232,11 @@
     /* Conversations (2026-11-22): anchored at the viewport FLOOR like the
      * calls popup — it covers the call footer (z 20 over z 16) instead of
      * floating above a reserved strip; the padding only clears the
-     * gesture bar's safe area. */
+     * gesture bar's safe area. Taller than its siblings (85dvh) so the
+     * agent list has room on a phone. */
     #conv-sheet {
       bottom: 0;
+      max-height: 85dvh;
       padding-bottom: env(safe-area-inset-bottom, 0px);
     }
     #conv-sheet.open,
