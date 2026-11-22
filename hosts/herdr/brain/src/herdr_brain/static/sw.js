@@ -57,7 +57,7 @@ var SHELL_ASSETS = [
   "/send-track.js",
   "/push.js", "/reader.js", "/toast.js", "/karaoke.js", "/announce.js",
   "/herd-group.js", "/mermaid.min.js", "/mermaid-viewer.js", "/speech.js",
-  "/tts-engine.js", "/consult.js",
+  "/tts-engine.js", "/consult.js", "/calls.js",
   "/i18n.js", "/i18n/es.js", "/i18n/en.js",
   "/settings.js", "/updates.js", "/dock.js",
   "/stream-uplink.js", "/stream-worklet.js",
