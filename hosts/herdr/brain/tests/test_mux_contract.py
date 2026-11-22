@@ -245,10 +245,10 @@ class TestSendTextSurface:
     """Literal typing WITHOUT Enter is herdr's pinned dialog surface.
 
     The free-text and search-first picker recipes ride it. parity wave 2
-    S5 (operator choice «Admitir») opens it on tmux over the exact
-    private-buffer path — typed bytes on stdin, NO submit ride; zellij
-    has no verified shape for it in this port and refuses with the same
-    honest ``unsupported`` before spawning anything.
+    S5 (operator choice «Admitir») opened it on tmux over the exact
+    private-buffer path; the lead extended it to zellij (fleet
+    parity-w2) over ``write-chars`` without the Enter ride. Both type
+    and never submit.
     """
 
     def test_tmux_types_over_the_exact_path_without_enter(self):
@@ -274,13 +274,20 @@ class TestSendTextSurface:
         assert delete == ["tmux-test", "delete-buffer", "-b", buffer_name]
         assert not any("hi;" in " ".join(c) for c in calls)
 
-    def test_zellij_refuses_unsupported_without_spawning(self):
-        with pytest.raises(MuxRefusal) as excinfo:
-            ZellijAdapter(bin_path="zellij-test", runner=_no_spawn_runner()).send_text(
-                "w1:p9", "hi"
-            )
-        assert excinfo.value.reason == "unsupported"
-        assert excinfo.value.capability == "send_text"
+    def test_zellij_types_one_literal_element_without_enter(self):
+        calls: list = []
+
+        def run(cmd, **kwargs):
+            calls.append(list(cmd))
+            import subprocess
+
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        ZellijAdapter(bin_path="zellij-test", runner=run).send_text("w1:p9", "hi;")
+        # ONE call: the exact bytes as ONE argv element, NO submit ride.
+        assert calls == [
+            ["zellij-test", "action", "write-chars", "--pane-id", "w1:p9", "hi;"]
+        ]
 
 
 def _tmux() -> TmuxAdapter:

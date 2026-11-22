@@ -1,22 +1,34 @@
-"""zellij adapter: grid, screen dump, verified submit — the rest refused.
+"""zellij adapter: grid, screen dump, verified submit, keys.
 
-The zellij CLI surface this port relies on is three verbs: listing
-panes, dumping the visible screen (styled or plain), and (f7f S2)
-submitting one prompt line — ``write-chars`` types the sanitized text
-as ONE argv element, ``write 10`` submits it (Enter as the LF byte),
-both targeting the pane exactly like ``dump-screen`` does. The submit
-is verified by re-reading with ``dump-screen`` before and after and
-classifying with the SAME receipt rules herdr rides. UNVERIFIED live:
-zellij is not installed on this host (f7f D2) — the write-path CLI
-shapes AND the probe's session-state touch (``list-panes --all --json``
-deciding reachability, ``--version`` deciding only the version) are
-derived and pinned by fixtures; re-pin against a live session before
-trusting them.
+The zellij CLI surface this port relies on is four verbs, all
+LIVE-PINNED against an isolated real session on zellij 0.45.1 (parity
+wave 2 S6): ``action list-panes --all --json`` (the top-level
+``list-panes`` does NOT exist — exit 2, unrecognized subcommand),
+``action dump-screen [--ansi]``, the prompt submit (``write-chars``
+types the sanitized text as ONE argv element, ``write 10`` presses
+Enter as the LF byte) and ``action send-keys`` for logical keys
+(chords SPACE-separated: ``Ctrl u``; the ``Ctrl+u`` spelling exits 2
+with ``Invalid key``). The submit is verified by re-reading with
+``dump-screen`` before and after and classifying with the SAME receipt
+rules herdr rides.
 
-Logical keys, bare text typing, tab creation and every agent surface
-still have no shape this port could pin through that surface, so the
-adapter REFUSES them with ``unsupported`` instead of approximating — a
-wrong keystroke into a live terminal is silent and hard to undo.
+Two honesty edges the live probes proved, both shaped into this
+adapter:
+
+- Plugin panes ride the same listing with ``is_plugin: true`` — and a
+  plugin pane (the floating First-Run Setup Wizard) can be
+  ``is_focused``. Plugins are FILTERED before parsing: they are never
+  agents, never active.
+- zellij fails SILENTLY on nonexistent panes: ``write-chars`` /
+  ``dump-screen`` targeting an unknown pane exit 0 with no output. The
+  write path never trusts exit codes; the receipt's before/after
+  screen comparison keeps an unreadable or vanished pane honestly
+  ``unknown``.
+
+Tab creation and every agent surface remain outside the opened
+surface, so the adapter REFUSES those with ``unsupported`` instead of
+approximating — a wrong keystroke into a live terminal is silent and
+hard to undo.
 
 zellij keeps each verb's life inside one session, so the adapter
 declares ``spaces="one"``; and because its CLI announces no structure
@@ -30,12 +42,21 @@ import subprocess
 from typing import Callable, List, Optional
 
 from ...config import MAX_SCREEN_LINES
-from ...herdr import AgentInfo, HerdrError, pick_active, sanitize_prompt_text
+from ...herdr import (
+    MAX_SEND_KEYS,
+    SEND_KEY_ALLOWLIST,
+    AgentInfo,
+    HerdrError,
+    pick_active,
+    sanitize_prompt_text,
+)
 from ...send_receipts import classify_send, text_echoed_on_input
 from ..capabilities import Capabilities, MuxProbe
+from ..keys import is_sendable_key, normalize_key, zellij_key
 from ..refusal import MuxRefusal
 
 Runner = Callable[..., subprocess.CompletedProcess]
+_LIST_PANES = ("action", "list-panes", "--all", "--json")
 
 #: How many immediate re-reads back the receipt after a submit. No
 #: sleeps here: the route's own verified poll adds the time-spaced
@@ -43,22 +64,38 @@ Runner = Callable[..., subprocess.CompletedProcess]
 RECEIPT_AFTER_READS = 2
 
 _EVIDENCE = {
-    "pane_grid": "list-panes --all --json pinned by tests/fixtures/mux/zellij/list-panes.json",
-    "ansi_screen": "action dump-screen [--ansi] pinned by tests/fixtures/mux/zellij/dump-screen.*",
+    "pane_grid": "action list-panes --all --json pinned by "
+                 "tests/fixtures/mux/zellij/list-panes.json (captured live "
+                 "on zellij 0.45.1; plugins filtered)",
+    "ansi_screen": "action dump-screen [--ansi] pinned by "
+                   "tests/fixtures/mux/zellij/dump-screen.* (captured live "
+                   "on zellij 0.45.1)",
     "prompt_submit": (
         "action write-chars + action write 10 (Enter) verified by dump-screen "
-        "re-reads (tests/test_mux_zellij.py; CLI-shape derived, UNVERIFIED "
-        "live — zellij not installed, f7f D2)"
+        "re-reads (tests/test_mux_zellij.py recorded; "
+        "tests/test_mux_zellij_live.py live on zellij 0.45.1)"
+    ),
+    "keys": (
+        "action send-keys, chords space-separated (Ctrl u), translated from "
+        "the neutral orthography (tests/test_mux_zellij.py; probed live on "
+        "zellij 0.45.1)"
     ),
 }
 
 
-def _exit_reason(detail: str) -> str:
-    """Maps a zellij failure text onto the refusal vocabulary."""
+def _session_failure(detail: str) -> Optional[str]:
+    """Recognize session diagnostics independently of the CLI exit status."""
     text = detail.lower()
-    if "no active session" in text or "error connecting" in text:
+    if (
+        "no active session" in text
+        or "no active zellij sessions" in text
+        or "error connecting" in text
+        or (text.startswith("session ") and "not found. the following sessions are active:" in text)
+    ):
         return "unreachable"
-    return "refused"
+    if text.startswith("please specify the session name to send actions to."):
+        return "refused"
+    return None
 
 
 class ZellijAdapter:
@@ -94,16 +131,14 @@ class ZellijAdapter:
         """Reachability = live session state answers; ``--version`` is
         the version source only.
 
-        Finding A, extended to zellij by the parent (the live evidence
-        is tmux 3.8's, the dishonesty shape is identical):
         ``zellij --version`` is a client-side flag and says nothing
         about any session. The reachability fact comes from one
         session-state roundtrip on the adapter's OWN pinned verb —
-        ``list-panes --all --json``, the same call ``list_agents``
-        rides; ``--version`` keeps answering the version field, and an
-        unreachable probe may still carry that version. UNVERIFIED live
-        (zellij not installed, f7f D2): the state-touch shape is
-        CLI-shape derived like the rest of this adapter's surface.
+        ``action list-panes --all --json``, the same call
+        ``list_agents`` rides; ``--version`` keeps answering the
+        version field, and an unreachable probe may still carry that
+        version. LIVE-PINNED (parity wave 2 S6): without a session the
+        real 0.45.1 CLI exits 1 with ``There is no active session!``.
         """
         try:
             proc = self._run(
@@ -119,12 +154,15 @@ class ZellijAdapter:
             )
         version = (proc.stdout or "").strip().split()[-1] if proc.stdout.strip() else ""
         try:
-            self._run_cli(["list-panes", "--all", "--json"], "pane_grid", timeout_s=10)
+            self._run_cli(
+                list(_LIST_PANES), "pane_grid",
+                timeout_s=10,
+            )
         except HerdrError as exc:
             return MuxProbe(
                 False, f"zellij session state did not answer: {exc}", version
             )
-        detail = "zellij session state answered list-panes"
+        detail = "zellij session state answered action list-panes"
         if version:
             detail = f"{detail} (zellij {version})"
         return MuxProbe(True, detail, version)
@@ -144,11 +182,16 @@ class ZellijAdapter:
             raise MuxRefusal(
                 "unreachable", capability, f"failed to execute zellij CLI: {exc}"
             ) from exc
-        if proc.returncode != 0:
-            detail = (proc.stderr or proc.stdout or "").strip()
-            reason = _exit_reason(detail)
+        # Session selection can print a diagnostic and a session list while
+        # exiting zero. Only interpret stderr on success: pane text in stdout
+        # may legitimately contain the same words.
+        stderr = (proc.stderr or "").strip()
+        detail = stderr or ((proc.stdout or "").strip() if proc.returncode else "")
+        reason = _session_failure(detail)
+        if proc.returncode != 0 or reason is not None:
             raise MuxRefusal(
-                reason, capability, f"zellij exited with {proc.returncode}: {detail}"
+                reason or "refused", capability,
+                f"zellij action failed (exit {proc.returncode}): {detail}",
             )
         return proc
 
@@ -196,6 +239,12 @@ class ZellijAdapter:
                 break  # the body moved and the text left the input line
         return afters
 
+    def _write_chars(self, pane_id: str, text: str, capability: str) -> None:
+        args = ["action", "write-chars", "--pane-id", pane_id]
+        if text.startswith("-"):
+            args.append("--")
+        self._run_cli([*args, text], capability)
+
     def _submit_line(self, pane_id: str, text: str) -> None:
         """Types one literal line, then submits it with Enter.
 
@@ -203,15 +252,18 @@ class ZellijAdapter:
         brain and the CLI, so quotes, ``$()`` and backticks stay
         literal — and Enter is the byte shape ``write 10`` (LF). Both
         calls target the pane exactly like ``dump-screen`` does
-        (``--pane-id``); UNVERIFIED live (see module docstring).
+        (``--pane-id``); LIVE-PINNED on zellij 0.45.1. Note the live
+        honesty edge: an unknown pane id exits 0 silently, so callers
+        who claim an outcome must ride the receipt's screen comparison,
+        never the exit code.
         """
+        self._write_chars(pane_id, text, "prompt_submit")
         self._run_cli(
-            ["action", "write-chars", "--pane-id", pane_id, text], "prompt_submit"
+            ["action", "write", "--pane-id", pane_id, "10"], "prompt_submit"
         )
-        self._run_cli(["action", "write", "--pane-id", pane_id, "10"], "prompt_submit")
 
     def list_agents(self) -> List[AgentInfo]:
-        proc = self._run_cli(["list-panes", "--all", "--json"], "pane_grid")
+        proc = self._run_cli(list(_LIST_PANES), "pane_grid")
         raw = (proc.stdout or "").strip()
         if not raw:
             return []
@@ -227,6 +279,12 @@ class ZellijAdapter:
         for entry in entries:
             if not isinstance(entry, dict):
                 continue
+            # Real 0.45.1 grids ride plugin panes too (status bar, and a
+            # floating First-Run Setup Wizard that can be `is_focused`).
+            # A plugin is never an agent and never the active one —
+            # filtered before anything else looks at the entry.
+            if entry.get("is_plugin"):
+                continue
             agents.append(
                 AgentInfo(
                     pane_id=str(entry.get("id", "")),
@@ -234,7 +292,7 @@ class ZellijAdapter:
                     status="unknown",
                     session_kind="",
                     session_value="",
-                    cwd=str(entry.get("cwd") or ""),
+                    cwd=str(entry.get("pane_cwd") or ""),
                     title=str(entry.get("title") or ""),
                     focused=bool(entry.get("is_focused", False)),
                 )
@@ -267,20 +325,44 @@ class ZellijAdapter:
         lines = proc.stdout.splitlines()
         return "\n".join(lines[-clamped:])
 
-    # -- refused surfaces --------------------------------------------------------
+    # -- writes -----------------------------------------------------------------
 
     def send_keys(self, pane_id: str, keys: List[str]) -> dict:
-        raise MuxRefusal(
-            "unsupported", "keys",
-            "zellij's verified CLI surface writes characters, not logical "
-            "key names; keys are refused rather than approximated",
-        )
+        """Sends logical key presses via ``action send-keys`` (S6).
+
+        The zellij verb exists in 0.45.1 and its dialect was probed
+        live: named keys are capitalized, chords are SPACE-separated.
+        The allowlist guard runs BEFORE any spawn — the same closed
+        set, translated through the neutral orthography — and a CLI
+        failure returns ``{ok: False}`` instead of raising, exactly
+        like the tmux and herdr adapters.
+        """
+        unsupported = sorted({key for key in keys if not is_sendable_key(key)})
+        if unsupported:
+            raise MuxRefusal(
+                "refused", "keys",
+                f"unsupported key(s): {', '.join(unsupported)} "
+                f"(allowed: {', '.join(SEND_KEY_ALLOWLIST)})",
+            )
+        if not keys:
+            raise MuxRefusal("refused", "keys", "refusing to send an empty key sequence")
+        if len(keys) > MAX_SEND_KEYS:
+            raise MuxRefusal(
+                "refused", "keys", f"too many keys: {len(keys)} (max {MAX_SEND_KEYS})"
+            )
+        translated = [zellij_key(normalize_key(key)) for key in keys]
+        try:
+            self._run_cli(
+                ["action", "send-keys", "--pane-id", pane_id, *translated], "keys"
+            )
+        except HerdrError as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, "error": ""}
 
     def pane_run(self, pane_id: str, command: str) -> None:
         raise MuxRefusal(
-            "unsupported", "keys",
-            "running a line needs a verified Enter; zellij's verified "
-            "surface cannot submit one",
+            "unsupported", "keys", "zellij supports verified prompt submission, "
+            "not pane_run through this adapter",
         )
 
     def send_prompt(self, pane_id: str, text: str, timeout_ms: Optional[int] = None) -> dict:
@@ -300,11 +382,22 @@ class ZellijAdapter:
         return {"ok": outcome in ("effective", "sent"), "status": outcome, "output": detail}
 
     def send_text(self, pane_id: str, text: str) -> None:
-        raise MuxRefusal(
-            "unsupported", "send_text",
-            "bare text typing needs a verified typing surface; zellij's "
-            "verified surface cannot deliver one",
-        )
+        """Types literal text WITHOUT Enter (fleet parity-w2 lead decision).
+
+        The lead opened this surface for zellij, consistent with the
+        operator's tmux S5 decision: ``write-chars`` alone delivers the
+        exact bytes and NO submit ride follows. The contract mirrors
+        herdr's ``send_text``: sanitized to ONE line (a literal newline
+        would submit the field early), empty refused before any spawn,
+        and a CLI failure raises — the dialog recipe re-reads the
+        screen itself. zellij's honesty edge applies: a nonexistent
+        pane answers rc 0 silently, so this call claims nothing; the
+        caller's screen re-read is where a silent pane shows up.
+        """
+        clean = sanitize_prompt_text(text)
+        if not clean:
+            raise HerdrError("refusing to send empty text")
+        self._write_chars(pane_id, clean, "send_text")
 
     def create_tab(self, label: str, cwd: Optional[str] = None) -> dict:
         raise MuxRefusal(

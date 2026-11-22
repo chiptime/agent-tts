@@ -1,4 +1,1 @@
-$ zellij --layout welcome
-Welcome to your workspace.
-status: ok
-$
+run the probes
