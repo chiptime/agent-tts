@@ -1,0 +1,29 @@
+ ▐▛███▛█   Claude Code v2.1.274
+▝▜██████▀  Sonnet 5 with xhigh effort · Claude Max
+  ▝▝ ▝▝    /tmp/claude-lab/project
+  Fable 5.1 writes better code and reports progress on long tasks. Switch anytime
+  with /model.
+  +1 more · /status
+● Hi.
+✻ Brewed for 1s · done 12:38 PM
+❯ /compact
+  ⎿  Compacted (ctrl+o to see full summary)
+  ⎿  Read docs/lab-notes.md (6 lines)
+  ⎿  Read src/module-11.ts (2 lines)
+  ⎿  Read src/module-9.ts (2 lines)
+  ⎿  Read src/module-7.ts (2 lines)
+  ⎿  Read src/module-5.ts (2 lines)
+  ⎿  Plan file referenced
+     (/tmp/claude-lab/config/plans/plan-a-tiny-change-linear-pixel.md)
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+   Resume session
+   ╭───────────────────────────────────────────────────────────────────────────╮
+   │ ⌕ Search…                                                                 │
+   ╰───────────────────────────────────────────────────────────────────────────╯
+     project
+   ❯ Read README.md
+     1 minute ago · main · 539.1KB
+     README review
+     26 minutes ago · main · 244.4KB
+     Ctrl+A to show all projects · Ctrl+B to only show current branch · Space to
+     preview · Ctrl+R to rename · Type to search · Esc to cancel

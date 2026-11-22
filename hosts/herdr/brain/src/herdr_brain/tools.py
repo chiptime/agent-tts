@@ -42,6 +42,7 @@ from .approval_lexicon import (
 )
 from .herdr import (
     MAX_SEND_KEYS,
+    DIALOG_RECIPE_KEYS,
     SEND_KEY_ALLOWLIST,
     AgentInfo,
     HerdrClient,
@@ -1246,8 +1247,8 @@ class BrainTools:
                 "changed", "the dialog changed before the answer; nothing was sent"
             )
 
-        def sender(target_pane: str, keys: list) -> None:
-            result = self.send_keys_to_pane(target_pane, keys)
+        def sender(target_pane: str, keys: list, *, recipe: bool = False) -> None:
+            result = self.send_keys_to_pane(target_pane, keys, recipe=recipe)
             if result["outcome"] != "sent":
                 raise HerdrError(
                     result.get("detail") or result["outcome"] or "send-keys failed"
@@ -1338,11 +1339,15 @@ class BrainTools:
                 return refused(guard.reason or "changed", guard.detail)
             keys = list(chosen.keys)
             if len(keys) > MAX_SEND_KEYS or not all(
-                key in SEND_KEY_ALLOWLIST for key in keys
+                key in DIALOG_RECIPE_KEYS for key in keys
             ):
                 return refused("invalid_target", "the recipe left the key dialect")
             try:
-                sender(pane_id, keys)
+                # The guarded recipe surface (T10/S3): a footer-named
+                # lowercase letter travels here and nowhere else; this
+                # branch already ran the entry guard's strict signature
+                # re-read above.
+                sender(pane_id, keys, recipe=True)
             except HerdrError as exc:
                 return refused("send-failed", str(exc))
             return {
@@ -2600,6 +2605,55 @@ class BrainTools:
                     "; ask the user for the exact option number",
                 )
             index = matches[0]
+        # T10/S11+S7: a structured MENU has no row-to-button mapping —
+        # its options are the footer's own keys, never the highlighted
+        # rows — so the spoken option rides the SAME guarded structured
+        # path a PWA tap uses (the S5 delegation discipline) — but ONLY
+        # when the explained options came from that same structured
+        # menu. read_dialog runs the generic heuristic first, and a
+        # menu screen can therefore be "explained" with numbered
+        # TRANSCRIPT rows (the config panel's module-1.ts...); mapping
+        # that spoken index onto the menu's footer actions sends a key
+        # the user never heard offered. Equality of the spoken labels
+        # with the menu's own option labels is the same-source proof;
+        # anything else falls through to the legacy walk, which refuses
+        # with the existing codes and sends nothing.
+        structured = self._spoken_structured_model(active)
+        if (
+            structured is not None
+            and structured.kind == "menu"
+            and 0 <= index < len(structured.options)
+            and structured.options[index].keys
+            and [str(opt.get("title") or "") for opt in options]
+            == [option.label for option in structured.options]
+        ):
+            result = self.answer_structured_dialog(
+                active.pane_id, structured.fingerprint, option=index
+            )
+            if result["outcome"] != "answered":
+                return refused(
+                    result.get("reason") or "changed",
+                    result.get("detail") or "",
+                )
+            chosen_menu = options[index]
+            audit_attempt(
+                "answered",
+                extra={"option": chosen_menu.get("n"), "keys": result.get("keys")},
+            )
+            return json.dumps(
+                {
+                    "outcome": "answered",
+                    "pane_id": active.pane_id,
+                    "option": chosen_menu.get("n"),
+                    "title": chosen_menu.get("title"),
+                    "keys": result.get("keys"),
+                    "note": (
+                        "the user's choice was sent to the dialog; tell the user "
+                        "exactly which option was pressed and nothing more"
+                    ),
+                },
+                ensure_ascii=False,
+            )
         selected = dialog.get("selected")
         if selected not in numbers:
             return refused(
@@ -3084,7 +3138,7 @@ class BrainTools:
             )
         return _reply_result("delivered", pane_id, status=status)
 
-    def send_keys_to_pane(self, pane_id: str, keys: list[str]) -> dict:
+    def send_keys_to_pane(self, pane_id: str, keys: list[str], *, recipe: bool = False) -> dict:
         """Answers a BLOCKED agent's dialog with logical key presses.
 
         ``herdr agent prompt`` refuses an agent waiting at an approval or
@@ -3095,6 +3149,13 @@ class BrainTools:
         silent and hard to undo), the key list is validated against the
         client's closed allowlist, and nothing raises. The outcome is one of
         ``sent`` | ``unknown_pane`` | ``error``.
+
+        ``recipe=True`` (T10/S3) rides the client's guarded dialog-recipe
+        surface instead — the ONLY surface that may send a lowercase
+        letter, and only because the guarded dialog answer re-derived the
+        recipe from a fresh read after its entry guard and a strict
+        signature match. Test stubs without that surface fall back to
+        plain ``send_keys``; the real client never has to.
         """
         try:
             known = {agent.pane_id for agent in self._herdr.list_agents()}
@@ -3103,7 +3164,10 @@ class BrainTools:
         if pane_id not in known:
             return _reply_result("unknown_pane", pane_id, detail="pane not found")
         try:
-            result = self._herdr.send_keys(pane_id, keys)
+            sender = self._herdr.send_keys
+            if recipe and hasattr(self._herdr, "send_recipe_keys"):
+                sender = self._herdr.send_recipe_keys
+            result = sender(pane_id, keys)
         except HerdrError as exc:
             return _reply_result("error", pane_id, detail=f"cannot send keys: {exc}")
         if not result.get("ok"):

@@ -1,0 +1,33 @@
+❯ write a long essay of about 800 words on the history of terminal user
+  interfaces
+● A Brief History of Terminal User Interfaces
+  The terminal user interface, or TUI, is often treated as a relic that graphical
+  systems replaced. Its history shows something different. It is a lineage of
+  ideas that never stopped evolving, and it keeps returning whenever speed,
+  portability, or simplicity matters.
+  The Teletype Era
+  Interactive computing began with the teletypewriter. In the 1960s, machines like
+  the ASR-33 Teletype let a person type a command and receive printed output on
+  paper. Interaction was strictly linear: you typed a line, the machine answered,
+  and the paper scrolled on. There was no way to revise what had already been
+  printed. The line-oriented model shaped everything that followed, including the
+  shell prompt, the newline-terminated command, and the idea of a program as a
+  filter on a stream of text.
+  Video terminals changed the medium without changing the model
+  ⎿  Interrupted · What should Claude do instead?
+❯ hi
+● Hi! I was partway through the essay on the history of terminal user interfaces
+  when you interrupted. Do you want me to start over and write the full ~800
+  words, or did you have something else in mind?
+✻ Worked for 1s · done 7:12 PM
+❯ hi
+● Hi again! I'm here. Should I write the full essay on terminal user interfaces
+  now, or would you like something else? Just say the word.
+✻ Cooked for 3s · done 7:12 PM
+──────────────────────────────────────────────────────────────────────────────────
+❯ write the full essay
+──────────────────────────────────────────────────────────────────────────────────
+  sonnet · lab-project
+  branch main · ctx 12%
+  limits 5h 20% · week 8%
+  ⏸ manual mode on · ← for agents

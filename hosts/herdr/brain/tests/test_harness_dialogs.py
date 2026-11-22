@@ -46,6 +46,14 @@ CORPUS = {
         # fixtures/dialogs/provenance.md).
         "claude-model-picker.txt",
         "claude-switch-model-yes.txt",
+        # T10/S11: the LAST-RESORT generic menu family, derived from the
+        # same real capture corpus (provenance.md rows below): footer
+        # -governed, never a digit, fail-closed on anything else.
+        "claude-menu-effort-slider.txt",
+        "claude-menu-effort-slider-wrapped.txt",
+        "claude-menu-config-panel.txt",
+        "claude-menu-rewind.txt",
+        "claude-menu-resume-picker.txt",
     ),
     "codex": ("codex-trust.txt", "codex-approval.txt", "codex-ask.txt"),
     "grok": ("grok-ask.txt", "grok-permission.txt", "grok-model-picker.txt"),

@@ -58,6 +58,7 @@ import re
 from typing import List, Optional, Tuple
 
 from ..model import DialogOption, StructuredDialog, fingerprint_region, unread
+from .. import menu_hints
 from ..numbered import (
     collect_numbered_block,
     is_free_text_label,
@@ -140,11 +141,74 @@ _SWITCH_EDGE_LOOKBACK = 10
 #: How many continuation rows row 1's label may wrap onto.
 _MAX_WRAPPED_ROWS = 3
 
+# ---------------------------------------------------------------------------
+# The LAST-RESORT generic menu (S11): the full-screen pickers no specific
+# grammar owns — the /config panel, /rewind, the resume picker, whatever
+# Claude ships next. The screen NAMES ITS OWN KEYS in its tail footer; the
+# grammar up-levels exactly those hints plus nothing (never a digit,
+# ADR 0009 — the ban lives in menu_hints.menu_key_for).
+# ---------------------------------------------------------------------------
+
+#: How far above the footer a ``─`` rule / box border may open the
+#: region: generous for a tall picker, bounded so a borderless buffer
+#: can't be claimed unboundedly (ref claude/region-top.ts:30).
+_REGION_SCAN_WINDOW = 30
+
+#: How far above the footer a ``▔`` MODAL EDGE may open the region: the
+#: tall /config panel puts its edge rows above any rule in reach.
+_MODAL_EDGE_WINDOW = 60
+
+#: A modal edge: ``▔`` from the row start, optionally one label spliced
+#: in between ``▔`` runs, closed by ``▔`` again (ref claude/region-top.ts).
+_MODAL_EDGE = re.compile(r"^▔+(?:\s+\S.*?\s+▔+)?$")
+
+#: Every edge in the capture corpus spans the pane; a short ``▔`` run
+#: inside prose is not an edge.
+_MODAL_EDGE_MIN_WIDTH = 8
+
+#: The window a live composer's shape may sit in: Claude paints its
+#: input box as a ``─`` rule / ``❯`` draft row / ``─`` rule sandwich
+#: right above the statusline (real capture claude-live-composer.txt,
+#: from claude-lab--statusline-3row--w82). A modal owns the tail
+#: instead, so this shape under a hint-like footer is a PROMPT screen,
+#: never a menu — claiming one would put fake buttons under a live
+#: composer.
+_BOX_WINDOW = 8
+
+#: The one pointer row shape the live box paints (the draft prompt).
+_BOX_PROMPT = "❯"
+
+
+def _is_rule(text: str) -> bool:
+    """A ``─`` rule row: rule glyphs only, spanning the screen."""
+    stripped = text.strip()
+    return len(stripped) >= 8 and set(stripped) == {"─"}
+
+
+def _is_box_border(text: str) -> bool:
+    """A closed BOX border row (corners or side walls), not a rule."""
+    stripped = text.strip()
+    if len(stripped) < 4 or any(ch not in "─│┃╭╮╰╯├┤╋┬┴" for ch in stripped):
+        return False
+    return any(ch in "│┃╭╮╰╯├┤╋┬┴" for ch in stripped)
+
+
+def _strip_ansi_width(text: str) -> int:
+    """The row's terminal width. Fixtures are ANSI-stripped and the
+    captures carry one-column glyphs, so ``len`` is the width."""
+    return len(text.rstrip())
+
 
 class ClaudeAdapter(AdapterBase):
     agent = "claude"
 
     def detect(self, lines: List[str], styled) -> Optional[StructuredDialog]:
+        dialog = self._families(lines)
+        if dialog is not None:
+            return dialog
+        return self._generic_menu(lines)
+
+    def _families(self, lines: List[str]) -> Optional[StructuredDialog]:
         footer = footer_line(lines)
         block = collect_numbered_block(lines)
         if block is None:
@@ -267,6 +331,193 @@ class ClaudeAdapter(AdapterBase):
             ),
         )
 
+
+    # -- last-resort generic menu (S11) --------------------------------
+
+    def _known_family_footer(self, footer_text: str, texts: List[str]) -> bool:
+        """Whether the footer phrase belongs to a family this adapter
+        already claims: the known dialog families keep their own
+        grammars, which encode VERIFIED recipes the generic one cannot
+        reproduce, so the whole screen goes to that family (or fails
+        closed) — never to ``·``-hint parsing (ref claude/menu.ts:91,
+        ADR 0053's lesson)."""
+        if (
+            _SELECT_FOOTER.search(footer_text)
+            or _MULTI_FOOTER.search(footer_text)
+            or _PERMISSION_FOOTER.search(footer_text)
+            or _MODEL_LIST_FOOTER.search(footer_text)
+        ):
+            return True
+        above = "\n".join(texts)
+        if _TRUST_FOOTER.search(footer_text) and _TRUST_QUESTION.search(above):
+            return True
+        if _BARE_ESC_FOOTER.match(footer_text) and _PERMISSION_QUESTION.search(above):
+            return True
+        return False
+
+    @staticmethod
+    def _live_box_at_tail(texts: List[str]) -> bool:
+        """Whether a LIVE composer's shape sits at the tail: Claude
+        paints the input box as a ``─`` rule / ``❯`` draft row / ``─``
+        rule sandwich right above the statusline (real capture
+        claude-live-composer.txt). A claimed modal owns the tail
+        instead, so this shape is a prompt screen — claiming it would
+        put fake buttons under a live composer (ref menu.ts bail 3)."""
+        non_blank = [text for text in texts if text.strip()]
+        window = non_blank[-_BOX_WINDOW:]
+        for below_top, top in enumerate(window[:-2]):
+            if not _is_rule(top):
+                continue
+            prompt = window[below_top + 1].strip()
+            if not prompt.startswith(_BOX_PROMPT):
+                continue
+            if _is_rule(window[below_top + 2]):
+                return True
+        return False
+
+    @staticmethod
+    def _is_modal_edge(texts: List[str], index: int, footer_index: int) -> bool:
+        """Whether row ``index`` is a ``▔`` MODAL EDGE: the edge shape,
+        at least eight cells, and FULL width — no row between it and the
+        footer is wider (ref claude/region-top.ts:isModalEdge)."""
+        row = texts[index].rstrip()
+        if not _MODAL_EDGE.match(row):
+            return False
+        width = _strip_ansi_width(row)
+        if width < _MODAL_EDGE_MIN_WIDTH:
+            return False
+        for later in texts[index + 1 : footer_index + 1]:
+            if _strip_ansi_width(later) > width:
+                return False
+        return True
+
+    def _region_top(self, texts: List[str], footer_index: int):
+        """The nearest of: a ``─`` rule within :data:`_REGION_SCAN_WINDOW`,
+        or a ``▔`` edge within :data:`_MODAL_EDGE_WINDOW`. A box border
+        past the rule window ends the search: it belongs to something
+        drawn before the modal, so a ``▔`` above it is not this modal's
+        edge. ``(top index, is_edge)`` or ``None``."""
+        for back in range(1, _MODAL_EDGE_WINDOW + 1):
+            index = footer_index - back
+            if index < 0:
+                return None
+            if self._is_modal_edge(texts, index, footer_index):
+                return index, True
+            row = texts[index]
+            if back <= _REGION_SCAN_WINDOW and (
+                _is_rule(row) or _is_box_border(row)
+            ):
+                # A CORNERED box border (the resume picker's search box,
+                # the config panel's filter field) is INTERIOR structure,
+                # not a modal top: its rows sit mid-region and the first
+                # non-blank under it is a group header, not a title.
+                # Claude opens its modals with either a `─` rule or the
+                # `▔` edge — the top claim takes only those.
+                if _is_box_border(row) and not _is_rule(row):
+                    if back > _REGION_SCAN_WINDOW:
+                        return None
+                    continue
+                return index, False
+            if back > _REGION_SCAN_WINDOW and _is_box_border(row):
+                return None
+        return None
+
+    def _generic_menu(self, lines: List[str]) -> Optional[StructuredDialog]:
+        """The generic modal contract, last resort (S11).
+
+        Ordered bails, cheapest and most decisive first — anything not
+        confidently recognised stays RAW (fail-closed; ref
+        HARNESS_CONTRIBUTING.md:136):
+
+        1. the last non-blank row must read as a key-hint footer group
+           (or a single ``Esc`` hint, which later needs the ``▔``
+           edge);
+        2. that footer must NOT belong to a family this adapter claims;
+        3. no live composer at the tail;
+        4. the region's top must exist (rule or modal edge) and carry a
+           non-blank title under it.
+
+        The options are exactly the footer's actions — the keys the
+        screen itself printed, NEVER a digit (ADR 0009 lives in
+        :func:`~herdr_brain.dialogs.menu_hints.menu_key_for`). A footer
+        hint naming a key outside the guarded dialect (``ctrl+a`` on the
+        resume picker, ``shift+tab``) yields NO button for that verb,
+        honestly; the region fingerprint keeps the pointer so a moved
+        highlight refuses the tap (refresh), because the footer keys
+        act on the highlight AS IT STANDS.
+        """
+        texts = [line.rstrip() for line in lines]
+
+        footer_index = len(texts) - 1
+        while footer_index >= 0 and not texts[footer_index].strip():
+            footer_index -= 1
+        if footer_index < 0:
+            return None
+        footer_text = texts[footer_index].strip()
+        if self._known_family_footer(footer_text, texts):
+            return None
+        if self._live_box_at_tail(texts):
+            return None
+
+        found = self._region_top(texts, footer_index)
+        if found is None:
+            return None
+        top, is_edge = found
+
+        group = menu_hints.read_key_hint_footer(texts)
+        if group is not None:
+            actions = group.actions
+            hint = group.text
+        else:
+            # ONE hint is too little to claim a screen by itself —
+            # unless the screen's own modal edge (``▔``) is above it,
+            # the mark Claude draws for its modals and nothing else
+            # (ref menu.ts escOnlyFooter).
+            single = menu_hints.parse_single_hint(texts[footer_index])
+            if single is None or single[0] != "esc" or not is_edge:
+                return None
+            actions = [
+                menu_hints.MenuAction(
+                    label=menu_hints.capitalize_menu_label(single[1]),
+                    keys=(single[0],),
+                    cancel=True,
+                )
+            ]
+            hint = footer_text
+
+        title = ""
+        for index in range(top + 1, footer_index):
+            if texts[index].strip():
+                title = texts[index].strip()
+                break
+        if not title:
+            return None
+
+        # Affordances advertised INSIDE the region (never assumed, and
+        # never the footer itself — ref menu.ts scans top+1..footer): a
+        # body row naming ``<value> ←/→ to <verb>`` is the leftRight
+        # fact, carried model-only in this unit (Q2, no buttons).
+        adjust_verb = adjust_label = ""
+        for index in range(top + 1, footer_index):
+            arrow = menu_hints.MENU_ARROW_ROW.match(texts[index])
+            if arrow:
+                adjust_verb = arrow[2].strip()
+                adjust_label = arrow[1].strip()
+                break
+
+        return StructuredDialog(
+            agent=self.agent,
+            kind="menu",
+            question=title,
+            options=tuple(
+                DialogOption(label=action.label, keys=action.keys, cancel=action.cancel)
+                for action in actions
+            ),
+            fingerprint=fingerprint_region(lines[top : footer_index + 1]),
+            hint=hint,
+            adjust_verb=adjust_verb,
+            adjust_label=adjust_label,
+        )
 
     def _model_picker(self, lines, footer, block) -> Optional[StructuredDialog]:
         """The ``/model`` family (parity-f7d S2): the ``Select model``

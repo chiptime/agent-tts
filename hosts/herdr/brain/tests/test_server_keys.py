@@ -96,3 +96,15 @@ def test_digit_sequences_are_valid_dialog_answers(client, keys):
     assert resp.status_code == 200
     assert resp.json() == {"ok": True, "pane_id": "w1:p2"}
     assert FakeTools.sent == [("w1:p2", keys)]
+
+
+def test_the_raw_keys_route_still_refuses_a_letter(client):
+    """T10/S3 pin: lowercase recipes live on the GUARDED dialog path
+    only — the raw pad keeps its letter-free allowlist, whatever the
+    dialog dialect grows."""
+    resp = client.post("/pane/keys", json={"pane_id": "w1:p2", "keys": ["u"]})
+
+    assert resp.status_code == 422
+    detail = resp.json()["detail"]
+    assert "unsupported key" in str(detail)
+    assert "ctrl+u" in str(detail)  # the letter-free allowlist, spelled out

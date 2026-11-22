@@ -226,6 +226,17 @@ class CompositeMux:
         _name, child, local_id = self._route(pane_id, "keys")
         return child.send_keys(local_id, keys)
 
+    def send_recipe_keys(self, pane_id: str, keys: List[str]) -> dict:
+        """The guarded dialog-recipe surface (T10/S3), routed like
+        :meth:`send_keys`: children that implement it accept the
+        footer-named letters; one that does not falls back to its plain
+        gate, which stays letter-free."""
+        _name, child, local_id = self._route(pane_id, "keys")
+        sender = getattr(child, "send_recipe_keys", None)
+        if sender is None:
+            return child.send_keys(local_id, keys)
+        return sender(local_id, keys)
+
     def pane_run(self, pane_id: str, command: str) -> None:
         _name, child, local_id = self._route(pane_id, "keys")
         return child.pane_run(local_id, command)

@@ -1,0 +1,11 @@
+           Claude Code v2.1.278
+ ▐▛███▛█   Opus 5 (1M context) with…
+▝▜██████▀  Claude Max
+  ▝▝ ▝▝    /tmp/m34-lab
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+   Effort
+Faster
+────────────────────────────────────────
+low     medium     high     xhigh      m
+   ←/→ to adjust · Enter to confirm · s
+for this session only · Esc to cancel

@@ -42,3 +42,24 @@ mirrors what brain's styled wide read hands the adapters
 The interaction contract these fixtures pin (ADR 0009): a model
 picker is answered with ARROWS + Enter, NEVER with a digit — in these
 lists a digit confirms and rewrites the default model.
+
+## Generic menu family (T10/S11)
+
+Derived like the parity-f7d rows above: real captures of the
+reference product's corpus, ANSI escapes stripped, leading context
+trimmed to the last rows of the screen (the tail anchoring the
+detection is what matters), interior bytes untouched. No live harness
+capture was possible in this unit (no network / no credentials —
+common rule), so the row names the reference capture each fixture
+derives from.
+
+| Fixture | Derived from (reference capture) | Shape it pins |
+|---|---|---|
+| `claude-menu-effort-slider.txt` | `claude-lab--menu-effort-slider--w82.txt` (Claude Code `/effort`) | `─` rule region top, titled panel, footer `←/→ to adjust · Enter to confirm · s for this session only · Esc to cancel` — the `s` hint is `for`-form (validates the group, yields no action) and `←/→` is skipped (footer row is outside the body scan) |
+| `claude-menu-effort-slider-wrapped.txt` | `claude--menu-effort-slider--w40-ultracode.txt` | the TERMINAL soft-wrap: the footer's last word starts at column 0 because the row above had no room; the group must join BEFORE parsing |
+| `claude-menu-config-panel.txt` | `claude-lab--menu-config-panel--w82.txt` (Claude Code `/config`) | tall modal whose region top is its `─` rule (tabs row + boxed search inside the region); footer `Type to filter · Enter/↓ to select · ↑ to tabs · Esc to clear` — compound `Enter/↓` skipped |
+| `claude-menu-rewind.txt` | `claude-lab--menu-rewind--w82.txt` (Claude Code `/rewind`) | `▔` modal edge (region top), pointer row inside, footer `Enter to continue · Esc to cancel` |
+| `claude-menu-resume-picker.txt` | `claude-lab--menu-resume-picker--w83.txt` (Claude Code `/resume`) | `▔` edge, boxed search, session rows; footer names `Ctrl+A`/`Ctrl+B`/`Ctrl+R`/`Space`/`Type` — every one OUTSIDE the guarded dialect, so the only button is `Esc` |
+| `claude-menu-status-screen.txt` | `claude-lab--menu-status-screen--w82.txt` (Claude Code `/status`) | NEGATIVE: a single `Esc to cancel` footer and NO `▔` edge anywhere — one hint is never a claim |
+| `claude-live-composer.txt` | `claude-lab--statusline-3row--w82.txt` | NEGATIVE: a live composer at the tail (`─` rule / `❯` draft / `─` rule sandwich under a hint-like statusline row) must never become a menu |
+| `claude-menu-marketplaces.txt` | `claude--v2283-fullscreen-plugin-marketplaces-add--w82.txt` (Claude Code 2.1.283 plugin marketplaces panel) | the letter recipe: footer `Enter to select · u to update · d to remove · Esc to go back` — TWO lowercase letters the footer itself names (`u`/`d`), the narrow S3 channel's real capture |
