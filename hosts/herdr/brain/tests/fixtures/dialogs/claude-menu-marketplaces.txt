@@ -1,0 +1,20 @@
+ ▐▛███▛█   Claude Code v2.1.283
+▝▜██████▀  Haiku 4.5 · Claude Max
+ ▝▝   ▝▝   /tmp/plugins-lab/project
+  Get to finished work sooner with Opus 5.5. Switch anytime with /model.
+❯ /plugin
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+   Plugins  Discover   Installed   Marketplaces   Errors   Stats
+   Manage marketplaces
+   ❯ + Add Marketplace
+     ● ✻ claude-plugins-official ✻
+       anthropics/claude-plugins-official
+       314 available • Updated 9/27/2026
+     ● demo-market
+       /tmp/plugins-lab/demo-market
+       1 available • Updated 9/27/2026
+     ● lab-market
+       /tmp/plugins-lab/lab-market
+       6 available • 6 installed • Updated 9/27/2026
+       (no CLI name) · listed as "Anthropic Directory" · browse on claude.ai
+   Enter to select · u to update · d to remove · Esc to go back

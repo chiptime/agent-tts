@@ -302,7 +302,7 @@ class TestSendKeys:
         ]
         assert result["ok"] is True
 
-    @pytest.mark.parametrize("keys", [["ctrl+c"], ["y"], ["enter", "rm -rf /"], ["ENTER"]])
+    @pytest.mark.parametrize("keys", [["ctrl+c"], ["y"], ["u"], ["enter", "rm -rf /"], ["ENTER"]])
     def test_refuses_a_key_outside_the_allowlist_without_running_anything(self, keys):
         runner = FakeRunner(results=[])
         client = HerdrClient(make_settings(), runner=runner)
@@ -551,3 +551,46 @@ class TestListPanes:
         client = HerdrClient(make_settings(), runner=runner)
         with pytest.raises(HerdrError, match="pane boom"):
             client.list_panes()
+
+
+class TestDialogRecipeKeys:
+    """The narrow letter channel (T10/S3): a footer-named lowercase
+    letter is a DIALOG recipe key — allowed ONLY on the guarded
+    dialog-recipe surface, never on the plain send_keys the raw
+    POST /pane/keys route rides."""
+
+    def test_the_recipe_surface_sends_a_footer_letter(self):
+        runner = FakeRunner(results=[(0, "", "")])
+        client = HerdrClient(make_settings(), runner=runner)
+
+        result = client.send_recipe_keys("w1:p2", ["u"])
+
+        assert runner.calls[0]["cmd"] == [
+            "herdr-fake", "agent", "send-keys", "w1:p2", "u",
+        ]
+        assert result["ok"] is True
+
+    def test_the_recipe_surface_keeps_the_rest_of_the_closed_set(self):
+        runner = FakeRunner(results=[(0, "", "")])
+        client = HerdrClient(make_settings(), runner=runner)
+
+        assert client.send_recipe_keys("w1:p2", ["enter", "esc"])["ok"] is True
+
+    @pytest.mark.parametrize("keys", [["ENTER"], ["rm -rf /"], ["ctrl+1"], ["1x"]])
+    def test_the_recipe_surface_still_refuses_everything_outside_the_dialect(self, keys):
+        runner = FakeRunner(results=[])
+        client = HerdrClient(make_settings(), runner=runner)
+
+        with pytest.raises(HerdrError, match="unsupported key"):
+            client.send_recipe_keys("w1:p2", keys)
+
+        assert runner.calls == []
+
+    def test_the_recipe_surface_refuses_an_empty_sequence_and_the_cap(self):
+        runner = FakeRunner(results=[])
+        client = HerdrClient(make_settings(), runner=runner)
+
+        with pytest.raises(HerdrError, match="empty"):
+            client.send_recipe_keys("w1:p2", [])
+        with pytest.raises(HerdrError, match="too many keys"):
+            client.send_recipe_keys("w1:p2", ["u"] * 50)

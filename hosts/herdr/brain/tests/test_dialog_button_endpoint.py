@@ -2626,3 +2626,64 @@ class TestModelSwitchOpensTheVariantList:
 
         assert result["outcome"] == "answered"
         assert result["next"] == "variant_picker"
+
+
+class TestMenuLetterRecipes:
+    """T10/S3: the menu family's footer-named LETTERS travel ONLY the
+    guarded dialog-answer path. The real capture
+    claude-menu-marketplaces.txt (Claude Code 2.1.283 plugin
+    marketplaces, provenance.md) names `u to update · d to remove`."""
+
+    MARKETPLACES = (FIXTURES / "claude-menu-marketplaces.txt").read_text(
+        encoding="utf-8"
+    )
+
+    def test_a_tap_on_a_footer_letter_recipe_sends_that_letter(self, make_client):
+        client, stub = make_client([BLOCKED_CLAUDE], self.MARKETPLACES)
+        fingerprint = _fingerprint("claude", self.MARKETPLACES)
+
+        response = client.post(
+            "/pane/dialog/answer",
+            json={"pane_id": "w1:p3", "fingerprint": fingerprint, "option": 1},
+        )
+
+        assert response.status_code == 200
+        assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["u"]}]
+        answered = [
+            entry
+            for entry in audit_entries(client)
+            if entry["action"] == "pane.dialog.answer"
+            and entry["detail"].get("outcome") == "answered"
+        ]
+        assert answered and answered[-1]["detail"]["option"] == 1
+
+    def test_a_recipe_surface_stub_receives_the_letter_there_only(self, make_client, settings, tmp_path, monkeypatch):
+        """A recipe-capable herdr client gets the letter on
+        send_recipe_keys, and send_keys sees NOTHING — the two surfaces
+        stay distinct."""
+        recorded: dict = {"recipe": [], "plain": []}
+
+        class RecipeAwareStub(DialogTapStub):
+            def send_keys(self, pane_id, keys):
+                recorded["plain"].append(list(keys))
+                return {"ok": True, "error": ""}
+
+            def send_recipe_keys(self, pane_id, keys):
+                recorded["recipe"].append(list(keys))
+                return {"ok": True, "error": ""}
+
+        client, stub = make_client(
+            [BLOCKED_CLAUDE],
+            self.MARKETPLACES,
+            stub=RecipeAwareStub([BLOCKED_CLAUDE], self.MARKETPLACES),
+        )
+        fingerprint = _fingerprint("claude", self.MARKETPLACES)
+
+        response = client.post(
+            "/pane/dialog/answer",
+            json={"pane_id": "w1:p3", "fingerprint": fingerprint, "option": 2},
+        )
+
+        assert response.status_code == 200
+        assert recorded["recipe"] == [["d"]]
+        assert recorded["plain"] == []

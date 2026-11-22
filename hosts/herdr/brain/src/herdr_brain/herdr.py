@@ -81,6 +81,15 @@ DIALOG_KEYS = frozenset({"enter", "esc", "left", "right", "up", "down", "0", "1"
 # the entry guard and a strict signature match.
 DIALOG_LETTER_KEYS = frozenset("abcdefghijklmnopqrstuvwxyz")
 
+#: The full DIALOG recipe dialect: the verified allowlist plus the
+#: lowercase letters the guarded dialog-answer path may send. This set
+#: lives on the RECIPE surface only (:meth:`HerdrClient.send_recipe_keys`,
+#: called solely by the guarded dialog answer after its entry guard and
+#: strict signature re-read); the plain :meth:`HerdrClient.send_keys`
+#: keeps SEND_KEY_ALLOWLIST, which is also what the raw `POST /pane/keys`
+#: route validates against — a letter can never ride it.
+DIALOG_RECIPE_KEYS = frozenset(SEND_KEY_ALLOWLIST) | DIALOG_LETTER_KEYS
+
 
 def is_valid_key(key: str) -> bool:
     """Whether herdr's grammar accepts `key` (the verified subset)."""
@@ -420,14 +429,36 @@ class HerdrClient:
         with herdr validating every key before writing any bytes.
 
         Each key MUST come from :data:`SEND_KEY_ALLOWLIST`; a key outside it
-        is refused BEFORE the CLI runs. Returns ``{ok, error}`` and never
-        raises on a CLI failure.
+        is refused BEFORE the CLI runs. Dialog recipes that need the
+        lowercase letters a footer named travel
+        :meth:`send_recipe_keys` instead — never here. Returns ``{ok,
+        error}`` and never raises on a CLI failure.
         """
-        unsupported = sorted({key for key in keys if key not in SEND_KEY_ALLOWLIST})
+        return self._send_keys_validated(pane_id, keys, SEND_KEY_ALLOWLIST)
+
+    def send_recipe_keys(self, pane_id: str, keys: List[str]) -> dict:
+        """The GUARDED dialog-recipe surface (T10/S3).
+
+        Callable ONLY from the guarded dialog answer paths, which
+        re-read the pane and match the strict dialog signature BEFORE
+        anything is sent. The dialect is :data:`DIALOG_RECIPE_KEYS` —
+        the plain allowlist plus the ONE lowercase letters a dialog's
+        own footer named (a menu grammar maps exactly those hints;
+        ``herdr_brain.dialogs.menu_hints.menu_key_for`` is the gate
+        that decides which letters exist). The raw key routes never
+        see this surface. Same empty/cap discipline as
+        :meth:`send_keys`; never raises on a CLI failure.
+        """
+        return self._send_keys_validated(pane_id, keys, DIALOG_RECIPE_KEYS)
+
+    def _send_keys_validated(
+        self, pane_id: str, keys: List[str], allowed: tuple
+    ) -> dict:
+        unsupported = sorted({key for key in keys if key not in allowed})
         if unsupported:
             raise HerdrError(
                 f"unsupported key(s): {', '.join(unsupported)} "
-                f"(allowed: {', '.join(SEND_KEY_ALLOWLIST)})"
+                f"(allowed: {', '.join(allowed)})"
             )
         if not keys:
             raise HerdrError("refusing to send an empty key sequence")
