@@ -4,7 +4,7 @@
  * endpoints whose contract is owned by the server (history_view.py,
  * mirror.py). This module holds everything about those views that is
  * decidable without the DOM: the cursor-pagination state machine for
- * /history and the URL shapes of both reads. app.js owns the fetching
+ * /history, the URL shapes of both reads and the shared state poll clock. app.js owns the fetching
  * (readFetch: bearer + pairing recovery), the DOM painting
  * (createElement/textContent only) and the visibility gating.
  *
@@ -64,6 +64,23 @@
       if (matches) return incoming.slice(0, incoming.length - k);
     }
     return incoming.slice();
+  }
+
+  /* Match literal text per turn in chronological order. Unicode case
+   * matching in the original string keeps the offsets valid even when
+   * lowercasing preceding characters would change their length. */
+  function findInTurns(turns, query) {
+    query = query.trim();
+    if (!query) return [];
+    var literal = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "giu");
+    var matches = [];
+    turns.forEach(function (turn, turnIndex) {
+      var hit;
+      while ((hit = literal.exec(turn.text || "")) !== null) {
+        matches.push({ turnIndex: turnIndex, start: hit.index, end: literal.lastIndex });
+      }
+    });
+    return matches;
   }
 
   function createHistoryModel() {
@@ -153,6 +170,8 @@
       applyFirstPage: applyFirstPage,
       olderPage: olderPage,
       applyOlderPage: applyOlderPage,
+      find: function (query) { return findInTurns(turns, query); },
+      turnAt: function (index) { return turns[index]; },
       fail: fail,
       reset: reset,
     };
@@ -173,8 +192,58 @@
     return "/pane/" + encodeURIComponent(paneId) + "/mirror";
   }
 
+  /* One poll clock. A healthy stream allows a slower background safety
+   * net; foreground attention expires unless a reader renews it.
+   * Re-arms exactly like the reference engine's applyCadence: clear the
+   * interval, arm the new one — one place owns the poll timer. */
+  function createStatePoller(options) {
+    var WATCHED = 1500, NORMAL = 5000, IDLE = 10000, ATTENTION_WINDOW = 10000;
+    var timer = null, armedMs;
+    var started = false, healthy = false, needsRecovery = false, hidden = false;
+    var lastAttention = -Infinity;
+
+    function cadence() {
+      if (!healthy) return NORMAL;
+      if (hidden) return IDLE;
+      return options.now() - lastAttention <= ATTENTION_WINDOW ? WATCHED : NORMAL;
+    }
+
+    /* Swap the interval to `ms` if it differs. The one place the poll
+     * timer is re-armed; the armed interval keeps its phase otherwise. */
+    function setCadence() {
+      if (!started) return;
+      var ms = cadence();
+      if (timer !== null && ms === armedMs) return;
+      if (timer !== null) options.clearIntervalFn(timer);
+      armedMs = ms;
+      timer = options.setIntervalFn(function () {
+        // Attention expires without a DOM event; the expiry costs only
+        // this tick, not an extra hot read.
+        if (cadence() !== armedMs) { setCadence(); return; }
+        try { options.refresh(); } finally { setCadence(); }
+      }, ms);
+    }
+
+    return {
+      start: function () { started = true; setCadence(); },
+      noteAttention: function () { lastAttention = options.now(); setCadence(); },
+      setHidden: function (value) { hidden = value; setCadence(); },
+      setStreamHealth: function (value) {
+        if (!value) needsRecovery = true;
+        if (healthy === value) return;
+        healthy = value;
+        var reconcile = started && healthy && needsRecovery;
+        if (healthy) needsRecovery = false;
+        // Native EventSource reopens the stream. Read once after its
+        // recovery to catch state that changed while we weren't listening.
+        try { if (reconcile) options.refresh(); } finally { setCadence(); }
+      },
+    };
+  }
+
   var api = {
     createHistoryModel: createHistoryModel,
+    createStatePoller: createStatePoller,
     trimBoundaryOverlap: trimBoundaryOverlap,
     turnKey: turnKey,
     historyUrl: historyUrl,

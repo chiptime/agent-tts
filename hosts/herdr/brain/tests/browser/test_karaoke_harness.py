@@ -108,7 +108,8 @@ EXPECTED_DIGESTS = {
     # peers render as informational rows (index.html styles), and both
     # i18n gain herd.peer_unreachable. app.js, index.html (/) and both
     # i18n re-pinned below.
-    "/": "581ce9741fe02438a1ead1b1dd3c7ed3669e6cc1526e39da44a233fa9ef39ea0",
+    # Parity-w2 S8: loaded-history search controls and highlights.
+    "/": "f689145e2a3a0229846c60bbb6f879dc816b5f301a4a8a3a896f55b065c27b74",
     # send-track.js re-pinned for the correction batch (f7g): the
     # per-receipt seq guard (a lower seq is a stale delivery, ignored),
     # a start for an already-known receipt never regresses it, and a
@@ -147,7 +148,9 @@ EXPECTED_DIGESTS = {
     # app.js re-pinned for parity-w2 S3: the stop-failure toast model
     # (stopFailureToast pure block) branches on the server's stable
     # dialog_open reason.
-    "/app.js": "bc9a7a8f64592005ef3b64a525561294f30a74a3d164009df196fc23a3dc3b9b",
+    # Parity-w2 S8: history search and the adaptive state poll.
+    "/app.js": "0ec770543e8a4fbd9ad4a74495c1f6b9ede2467b4127db039e71f3feb59adbd8",
+    "/history.js": "fa3526827b3e791bdc8f5950e398f3e318a2bff1c85ba684f0231d22d74e08d9",
     "/push.js": "e1acadd98d95420cf9924ea633b32d9ec5b51c8654c5e7df923c2bbc5547f52c",
     "/receipts.js": "df01a313d8f6101bd9601d5a2a65eb420df7791c417a09e2d0d8c269a36742b0",
     # dialogs.js re-pinned for the parity-f7d follow-up: MODEL_SWITCH_COMMANDS
@@ -178,10 +181,10 @@ EXPECTED_DIGESTS = {
     # Both i18n re-pinned for parity-f7g S5: the track.* keys (the
     # tracker card's Spanish lines and their English locale ride).
     # Re-pinned for parity T4/S4: newsession.err_resume_workspace.
-    # Re-pinned for parity wave 2 merged bytes: stop.dialog_open (S3) and
-    # pair.recovered (S2) both live in the i18n dictionaries.
-    "/i18n/en.js": "c1978c61deb37c8558f6f502a42b65b41090c0fb9c14988a7d2bd7dbc89990ae",
-    "/i18n/es.js": "130a48ed90b2f2cb7355b31bb60b84babf3e0a2ed0ebd66293cb7fcbabbde16c",
+    # Re-pinned to the merged parity wave 2 bytes (stop.dialog_open S3,
+    # pair.recovered S2, history find S8, and later merged keys).
+    "/i18n/en.js": "67546a216784969145c083aa54ebf071165e06dd94bf23972f1cbe4a0831dc07",
+    "/i18n/es.js": "ec8753009887c5bbdd269e8da817daf69b920809c9a06f074c087f05cfb37cea",
     "/settings.js": "1c2cf3ed92bf959c19ecde0107618b8d1ff0690d2c6fa7c842a2fdc551e05f72",
     "/updates.js": "7f87250cf6cd9c2b8944da632fe036d0c18a87a90f48f70b84e18bcd338cfa84",
     "/calls.js": "9b9ec591709d282c6e673770b2ffc1ed1562650104d8e8393126d186aa764165",

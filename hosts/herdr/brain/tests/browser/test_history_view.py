@@ -54,6 +54,76 @@ def _open_history(harness):
     expect(harness.page.locator("#history-panel")).to_be_visible()
 
 
+def test_find_reveals_loaded_turns_and_counts_literal_matches(karaoke_app):
+    turns = [{"role": "user", "text": "<b>Needle</b>"}]
+    turns += [{"role": "assistant", "text": f"Filler {i}"} for i in range(60)]
+    turns += [{"role": "assistant", "text": "Last NEEDLE, then needle"}]
+    # Oversized loaded batch exercises the same render window without needing
+    # a larger server page or fetching any of the remaining history.
+    harness = _harness(karaoke_app, _page(turns, cursor="older"))
+    page = harness.page
+    _open_history(harness)
+    expect(page.locator("#history-turns .hturn")).to_have_count(60)
+    expect(page.get_by_text("<b>Needle</b>", exact=True)).to_have_count(0)
+
+    search = page.get_by_role("searchbox", name="Buscar en el historial cargado")
+    search.fill("needle")
+    expect(page.locator("#history-find-count")).to_have_text("1 de 3")
+    expect(page.locator("#history-turns mark.current")).to_have_text("Needle")
+    expect(page.locator("#history-turns mark.current")).to_be_in_viewport()
+    expect(page.locator("#history-turns b")).to_have_count(0)
+    page.get_by_role("button", name="Coincidencia anterior").click()
+    expect(page.locator("#history-find-count")).to_have_text("3 de 3")
+    expect(page.locator("#history-turns mark.current")).to_have_text("needle")
+    page.get_by_role("button", name="Coincidencia siguiente").click()
+    expect(page.locator("#history-find-count")).to_have_text("1 de 3")
+    assert page.evaluate(
+        "() => __karaokeHarness.fetchCalls.filter(p => p === '/history').length") == 1
+    search.fill("does not appear")
+    expect(page.locator("#history-find-count")).to_have_text("Sin coincidencias")
+    expect(page.locator("#history-turns mark")).to_have_count(0)
+    page.evaluate("() => { localStorage.setItem('brain:locale:v1', 'en'); }")
+    page.reload()
+    expect(page.get_by_role("searchbox", name="Search loaded history")).to_be_visible()
+
+
+def test_find_updates_after_cursor_paging_without_losing_the_current_match(karaoke_app):
+    harness = _harness(karaoke_app, _page([{"role": "assistant", "text": "Recent NEEDLE"}], cursor="older"))
+    page = harness.page
+    _open_history(harness)
+    page.locator("#history-find").fill("needle")
+    expect(page.locator("#history-find-count")).to_have_text("1 de 1")
+    harness.respond("/history", _page([{"role": "user", "text": "Old needle"}]), query=HISTORY_QUERY)
+    page.locator("#history-more").click()
+    expect(page.locator("#history-find-count")).to_have_text("2 de 2")
+    expect(page.locator("#history-turns mark.current")).to_have_text("NEEDLE")
+    page.locator("#history-find").press("Enter")
+    expect(page.locator("#history-turns mark.current")).to_have_text("needle")
+
+
+def test_sse_health_recovers_state_reads_without_reopening_the_source(karaoke_app):
+    harness = karaoke_app()
+    page = harness.page
+    page.clock.install()
+    page.add_init_script("Object.defineProperty(document, 'hidden', {get: () => true});")
+    harness.load()
+    page.wait_for_function("() => __karaokeHarness.fetchCalls.includes('/herd')")
+    count = "() => __karaokeHarness.fetchCalls.filter(p => p === '/herd').length"
+    source = "__karaokeHarness.eventSources[0]"
+    page.evaluate(f"() => {source}.emit('open')")
+    before = page.evaluate(count)
+    page.clock.fast_forward(5500)
+    assert page.evaluate(count) == before, "a healthy background stream uses the 10 s safety net"
+    page.evaluate(f"() => {source}.emit('error')")
+    page.clock.fast_forward(5500)
+    assert page.evaluate(count) == before + 1, "one fallback state poll in 5 s"
+    page.evaluate(f"() => {source}.emit('open')")
+    assert page.evaluate(count) == before + 2, "a reopening reconciles immediately"
+    page.clock.fast_forward(5500)
+    assert page.evaluate(count) == before + 2, "the idle interval is restored"
+    assert page.evaluate("() => __karaokeHarness.eventSources.length") == 1
+
+
 def test_first_page_renders_turns_as_text_nodes(karaoke_app):
     harness = _harness(karaoke_app, _page([
         {"role": "user", "text": "primera pregunta", "created_at": "2026-01-01T00:00:00Z"},

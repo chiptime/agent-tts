@@ -140,3 +140,23 @@ test("mirrorUrl addresses one pane with the server-default window", () => {
   assert.equal(HistoryView.mirrorUrl("w1:p1"), "/pane/w1%3Ap1/mirror");
   assert.equal(HistoryView.mirrorUrl(null), null);
 });
+
+test("find uses literal, non-overlapping Unicode ranges in every loaded turn", () => {
+  const model = HistoryView.createHistoryModel();
+  model.firstPage("w1:p1");
+  model.applyFirstPage(page([turn("assistant", "İ🌿 Á.a á.A  aaaa")], {cursor: "b2", has_more: true}));
+  model.olderPage();
+  model.applyOlderPage(page([turn("user", "á.a")]));
+  assert.deepEqual(model.find("  Á.A  "), [
+    {turnIndex: 0, start: 0, end: 3},
+    {turnIndex: 1, start: 4, end: 7},
+    {turnIndex: 1, start: 8, end: 11},
+  ]);
+  assert.deepEqual(model.find("aa"), [
+    {turnIndex: 1, start: 13, end: 15}, {turnIndex: 1, start: 15, end: 17},
+  ]);
+  assert.deepEqual(model.find("   "), []);
+  assert.deepEqual(model.find(".x"), []);
+  model.reset();
+  assert.deepEqual(model.find("á.a"), []);
+});

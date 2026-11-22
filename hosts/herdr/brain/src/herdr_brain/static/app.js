@@ -4366,6 +4366,14 @@
 
   var historyModel = window.HistoryView ? HistoryView.createHistoryModel() : null;
   var historySeq = 0;
+  var historyRenderStart = 0;
+  var historyJumpTop = null;
+  var historyFind = $("history-find");
+  var historyFindCount = $("history-find-count");
+  var historyPrev = $("history-find-prev");
+  var historyNext = $("history-find-next");
+  var historyMatches = [];
+  var historyMatch = -1;
   var HISTORY_MORE_LABEL = function () { return t("history.more"); };
   var HISTORY_BUSY_LABEL = function () { return t("common.loading"); };
   var HISTORY_TOP_THRESHOLD = 24;  // px from the top that counts as "parked at the oldest edge"
@@ -4390,6 +4398,12 @@
     if (!historyModel) return;
     historySeq++;
     historyModel.reset();
+    historyTurns.textContent = "";
+    historyRenderStart = 0;
+    historyJumpTop = null;
+    historyMore.classList.add("hidden");
+    if (historyFind) historyFind.value = "";
+    updateHistoryFind(false);
     if (currentAgentTabId === "history") loadHistoryFirstPage();
   }
 
@@ -4425,19 +4439,111 @@
     return el;
   }
 
-  function renderHistoryFirstPage(result) {
-    var st = historyModel.state();
-    historyTurns.textContent = "";
+  function revealHistoryThrough(start) {
+    if (start >= historyRenderStart) return;
     var fragment = document.createDocumentFragment();
-    for (var i = 0; i < result.turns.length; i++) {
-      fragment.appendChild(buildHistoryTurn(result.turns[i]));
+    for (var i = start; i < historyRenderStart; i++) {
+      fragment.appendChild(buildHistoryTurn(historyModel.turnAt(i)));
     }
-    historyTurns.appendChild(fragment);
+    historyTurns.insertBefore(fragment, historyTurns.firstChild);
+    historyRenderStart = start;
+    paintHistoryPager();
+  }
+
+  function paintHistoryPager() {
+    var state = historyModel.state();
+    historyMore.classList.toggle("hidden", !(historyRenderStart || state.count && state.hasMore));
+  }
+
+  function paintHistoryFindCount() {
+    if (!historyFind) return;
+    historyFindCount.textContent = !historyFind.value.trim() ? "" : historyMatches.length ?
+      t("history.find_count", { current: historyMatch + 1, total: historyMatches.length }) :
+      t("history.find_none");
+    historyPrev.disabled = historyNext.disabled = historyMatches.length === 0;
+  }
+
+  function paintHistoryMatches() {
+    var index = 0;
+    while (index < historyMatches.length && historyMatches[index].turnIndex < historyRenderStart) index++;
+    for (var row = 0; row < historyTurns.children.length; row++) {
+      var turnIndex = historyRenderStart + row;
+      var body = historyTurns.children[row].lastChild;
+      if (!body.childElementCount && (!historyMatches[index] || historyMatches[index].turnIndex !== turnIndex)) continue;
+      var text = historyModel.turnAt(turnIndex).text || "";
+      var offset = 0;
+      body.textContent = "";
+      while (index < historyMatches.length && historyMatches[index].turnIndex === turnIndex) {
+        var hit = historyMatches[index];
+        var mark = document.createElement("mark");
+        mark.dataset.historyMatch = index++;
+        mark.textContent = text.slice(hit.start, hit.end);
+        body.append(text.slice(offset, hit.start), mark);
+        offset = hit.end;
+      }
+      body.append(text.slice(offset));
+    }
+  }
+
+  function selectHistoryMatch(jump) {
+    var hit = historyMatches[historyMatch];
+    if (hit && jump && hit.turnIndex < historyRenderStart) {
+      revealHistoryThrough(hit.turnIndex);
+      paintHistoryMatches();
+    }
+    var prior = historyTurns.querySelector("mark.current");
+    if (prior) prior.classList.remove("current");
+    var mark = hit && historyTurns.querySelector('[data-history-match="' + historyMatch + '"]');
+    if (mark) {
+      mark.classList.add("current");
+      if (jump) {
+        // Scroll only this list; a find jump does not ask for unread pages.
+        historyTurns.scrollTop += mark.getBoundingClientRect().top -
+          historyTurns.getBoundingClientRect().top - historyTurns.clientHeight / 2;
+        historyJumpTop = historyTurns.scrollTop;
+      }
+    }
+    paintHistoryFindCount();
+  }
+
+  function updateHistoryFind(jump, prepended) {
+    if (!historyFind) return;
+    var oldCount = historyMatches.length;
+    historyMatches = historyModel.find(historyFind.value);
+    historyMatch = !historyMatches.length ? -1 : prepended && historyMatch >= 0 ?
+      historyMatch + historyMatches.length - oldCount : 0;
+    paintHistoryMatches();
+    selectHistoryMatch(jump);
+  }
+
+  function moveHistoryMatch(step) {
+    var count = historyMatches.length;
+    if (!count) return;
+    historyMatch = (historyMatch + step + count) % count;
+    selectHistoryMatch(true);
+  }
+
+  if (historyFind) {
+    historyFind.addEventListener("input", function () { updateHistoryFind(true); });
+    historyFind.addEventListener("keydown", function (event) {
+      if (event.key !== "Enter" || event.isComposing) return;
+      event.preventDefault();
+      moveHistoryMatch(event.shiftKey ? -1 : 1);
+    });
+    historyPrev.addEventListener("click", function () { moveHistoryMatch(-1); });
+    historyNext.addEventListener("click", function () { moveHistoryMatch(1); });
+  }
+
+  function renderHistoryFirstPage(result) {
+    historyTurns.textContent = "";
+    historyRenderStart = result.turns.length;
+    revealHistoryThrough(Math.max(0, historyRenderStart - HistoryView.HISTORY_PAGE_LIMIT));
     historyTurns.scrollTop = historyTurns.scrollHeight;
+    updateHistoryFind(true);
     var empty = !result.turns.length;
     historyEmpty.classList.toggle("hidden", !empty);
-    historyMore.classList.toggle("hidden", !(empty ? false : st.hasMore));
-    if (empty) historyEmpty.textContent = "Sin historial de este agente todavía";
+    paintHistoryPager();
+    if (empty) historyEmpty.textContent = t("history.empty");
   }
 
   function renderHistoryOlderPage(result) {
@@ -4445,13 +4551,11 @@
      * content: everything shifted down by the added height. */
     var beforeHeight = historyTurns.scrollHeight;
     var beforeTop = historyTurns.scrollTop;
-    var fragment = document.createDocumentFragment();
-    for (var i = 0; i < result.prepend.length; i++) {
-      fragment.appendChild(buildHistoryTurn(result.prepend[i]));
-    }
-    historyTurns.insertBefore(fragment, historyTurns.firstChild);
+    historyRenderStart += result.prepend.length;
+    revealHistoryThrough(0);
+    updateHistoryFind(false, true);
     historyTurns.scrollTop = beforeTop + (historyTurns.scrollHeight - beforeHeight);
-    historyMore.classList.toggle("hidden", !historyModel.state().hasMore);
+    paintHistoryPager();
   }
 
   function loadHistoryFirstPage() {
@@ -4508,17 +4612,28 @@
   }
 
   if (historyMore) {
-    historyMore.addEventListener("click", function () { loadHistoryOlderPage(); });
+    historyMore.addEventListener("click", growHistoryUpward);
+  }
+  function growHistoryUpward() {
+    if (!historyRenderStart) { loadHistoryOlderPage(); return; }
+    var beforeHeight = historyTurns.scrollHeight;
+    var beforeTop = historyTurns.scrollTop;
+    revealHistoryThrough(Math.max(0, historyRenderStart - HistoryView.HISTORY_PAGE_LIMIT));
+    paintHistoryMatches();
+    selectHistoryMatch(false);
+    historyTurns.scrollTop = beforeTop + historyTurns.scrollHeight - beforeHeight;
   }
   /* Scroll-to-top loading: parked at the oldest edge with more pages to
    * come, the next older page loads without hunting for the button. */
   if (historyTurns) {
     historyTurns.addEventListener("scroll", function () {
       if (!historyModel) return;
+      if (historyTurns.scrollTop === historyJumpTop) return;
+      historyJumpTop = null;
       var st = historyModel.state();
-      if (st.hasMore && !st.loading &&
+      if ((historyRenderStart || st.hasMore) && !st.loading &&
           historyTurns.scrollTop <= HISTORY_TOP_THRESHOLD) {
-        loadHistoryOlderPage();
+        growHistoryUpward();
       }
     });
   }
@@ -4526,7 +4641,7 @@
   /* ---------------- Terminal tab: live pane mirror (doc 05) ----------
    * /pane/{id}/mirror serves the visible window as ANSI runs (masked
    * server-side); paintRunsInto reproduces them faithfully. The mirror
-   * rides the SAME 5s poll as /herd, /view and /conversation — but only
+   * rides the SAME poll as /herd, /view and /conversation — but only
    * while its tab is visible: a hidden tab issues no fetch at all. No
    * terminal emulation here, the pane already did it. */
 
@@ -4820,12 +4935,35 @@
     refreshHerd();
     refreshView();
     refreshConversation();
-    /* Held hook permissions (f7e S3): global card, same 5s beat. */
+    /* Held hook permissions (f7e S3): global card, same beat. */
     refreshHolds();
-    /* The live mirror rides the same 5s beat — gated by its own tab
+    /* The live mirror rides the same beat — gated by its own tab
      * visibility inside refreshMirror, so a hidden terminal costs no
      * fetch at all. */
     refreshMirror();
+  }
+
+  var statePoller = HistoryView.createStatePoller({
+    now: function () { return performance.now(); },
+    setIntervalFn: function (fn, ms) { return setInterval(fn, ms); },
+    clearIntervalFn: function (handle) { clearInterval(handle); },
+    refresh: refreshState,
+  });
+
+  function noteAgentAttention() {
+    if (!document.hidden && !agentView.classList.contains("hidden")) statePoller.noteAttention();
+  }
+
+  function startStatePolling() {
+    ["pointerdown", "keydown", "wheel"].forEach(function (type) {
+      document.addEventListener(type, noteAgentAttention, { capture: true, passive: true });
+    });
+    document.addEventListener("visibilitychange", function () {
+      noteAgentAttention();
+      statePoller.setHidden(document.hidden);
+    });
+    statePoller.setHidden(document.hidden);
+    statePoller.start();
   }
 
   /* ---------------- audio playback (single queue) ---------------- */
@@ -5958,6 +6096,13 @@
   function attachEvents(url) {
     var source = new EventSource(url);
     source.onmessage = handleEventsMessage;
+    // Ignore late health events from a source retired by pairing.
+    source.onopen = function () {
+      if (eventsSource === source) statePoller.setStreamHealth(true);
+    };
+    source.onerror = function () {
+      if (eventsSource === source) statePoller.setStreamHealth(false);
+    };
     eventsSource = source;
   }
 
@@ -5971,11 +6116,14 @@
     if (!eventsOpened || !window.EventSource) return;
     var url = new URL(eventsUrl(), location.href).href;
     /* Idempotent by URL: while the live transport already carries the
-     * current credential, nothing moves (the 5s read polls re-offer
+     * current credential, nothing moves (the state reads re-offer
      * pairing on every beat; only a real credential change reopens). */
     if (eventsSource && eventsSource.readyState !== 2 &&
         eventsSource.url === url) return;
-    if (eventsSource) eventsSource.close();
+    if (eventsSource) {
+      eventsSource.close();
+      statePoller.setStreamHealth(false);
+    }
     attachEvents(url);
   }
 
@@ -9791,7 +9939,7 @@
       if (payload) renderApprovalCard();  // immediate popup paint (arm already re-rendered)
     });
   });
-  setInterval(refreshState, 5000);
+  startStatePolling();
   // FR-01 (PRD announcements-without-call): announcements must arrive with
   // the page open, call or no call. The eventsOpened guard keeps it
   // idempotent — startCall's later openEvents() reuses this connection.
@@ -9855,7 +10003,7 @@
 
   /* The newer modules keep their built-in Spanish lines as fallbacks;
    * the live runtime overrides them once, here, and a locale change
-   * re-paints every JS-managed label immediately (the 5s poll repaints
+   * re-paints every JS-managed label immediately (the poll repaints
    * the data-driven surfaces on its own). */
   if (window.I18N) {
     if (window.Receipts && window.Receipts.useTranslator) window.Receipts.useTranslator(I18N.t);
@@ -9869,6 +10017,7 @@
       renderPill();
       paintStopIdle();
       renderHerd(lastHerd, lastPeers);
+      paintHistoryFindCount();
       refreshState();
     });
   }
