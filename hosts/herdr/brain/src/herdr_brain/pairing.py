@@ -280,6 +280,26 @@ def enforced_from_registry(raw: object) -> bool:
     return bool(devices)
 
 
+def registry_corrupt(raw: object) -> bool:
+    """Whether coercion would drop content this PARSED registry value
+    still holds: an unparsable read (``None``), a non-registry shape,
+    or a devices list whose entries coercion would drop (incomplete
+    entries, duplicate labels). The gate answers such content
+    fail-closed (``enforced_from_registry``); a ``claim`` about to
+    REPLACE the file backs the original bytes up first (parity wave 2
+    S2, operator choice O2) — the loss becomes explicit, never silent.
+
+    Unknown top-level keys on an otherwise valid registry are hand-edit
+    noise, not credential content, so they do not count: every entry's
+    label, hash and stamps survive the coercion."""
+    if raw is None or not isinstance(raw, dict):
+        return True
+    entries = raw.get("devices")
+    if not isinstance(entries, list):
+        return True
+    return len(coerce_registry(raw)["devices"]) < len(entries)
+
+
 def normalize_label(raw: object) -> Optional[str]:
     """Validate and bound a client-supplied label. None when unusable —
     the same answer for "empty" and "1 KB of newlines", because the
@@ -428,8 +448,10 @@ class PairingStore:
     brain halfway through. A CORRUPT registry keeps the requirement on
     with no device authorized (fail closed, doc 01 AC10) — and a claim
     rewrites a valid registry, so ``herdr-brain pair`` is always the
-    way back in.
-    """
+    way back in; when the file it replaces was corrupt, its original
+    bytes reach ``paired-devices.json.corrupt-<ts>`` first (parity
+    wave 2 S2) and ``devices restore`` brings the lost entries back.
+"""
 
     def __init__(self, state_dir, now: Callable[[], float] = None,
                  random: Callable[[int], bytes] = secrets.token_bytes):
@@ -455,17 +477,21 @@ class PairingStore:
 
     # -- atomic, owner-only writes --
 
-    def _write_atomic(self, path: Path, text: str) -> None:
+    def _write_atomic(self, path: Path, text: "str | bytes") -> None:
         """tempfile with a unique name + os.replace: readers never see a
         half-written file, and two writers never collide on one temp
-        name (the pid plus a counter keeps them apart)."""
+        name (the pid plus a counter keeps them apart). Accepts bytes as
+        well as text — the corrupt-registry backup must preserve the
+        original file EXACTLY, including bytes no text decoding could
+        carry (parity wave 2 S2)."""
         ensure_private_dir(self.state_dir)
         tmp = path.with_name(
             f"{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp"
         )
+        binary = isinstance(text, bytes)
         fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            with os.fdopen(fd, "wb" if binary else "w", encoding=None if binary else "utf-8") as handle:
                 handle.write(text)
             os.replace(str(tmp), str(path))
             # os.replace lands a NEW inode, but this filesystem's mtime
@@ -628,7 +654,10 @@ class PairingStore:
         token is returned ONCE — not stored, recoverable or
         re-derivable — and the pending pairing is destroyed, so a code
         is single-use even within its TTL. Returns ``("ok", {"token",
-        "label"})`` or ``("fail", reason)``."""
+        "label"})`` or ``("fail", reason)``; when the registry file the
+        claim replaces was corrupt, ``"recovered": True`` and
+        ``"backup": "<name>"`` ride the outcome additively (parity
+        wave 2 S2) — the valid-registry shape is unchanged."""
         with self._lock:
             pending = coerce_pending(self._read_json(self.pending_path))
             reason, to_persist = check_claim(pending, code, self._now())
@@ -656,19 +685,93 @@ class PairingStore:
             # credential is born — not from when the code was minted.
             if pending.get("expiresInS") is not None:
                 enrolment["expiresAt"] = now + pending["expiresInS"]
-            current = coerce_registry(self._read_json(self.registry_path))
+            raw = self._read_json(self.registry_path)
+            current = coerce_registry(raw)
             enrolled = add_device(current, enrolment)
             # A duplicate label leaves the pending pairing alive: the
             # operator retries with another name rather than re-running
             # `herdr-brain pair`.
             if enrolled is None:
                 return "fail", CLAIM_DUPLICATE_LABEL
+            # O2: replacing a corrupt registry destroys every device
+            # entry the file still held. Back the ORIGINAL bytes up
+            # first — the loss must be explicit, never silent — and say
+            # so in the outcome so the phone and the CLI can tell the
+            # operator. An absent file is not corruption: nothing to
+            # save.
+            backup_name = None
+            if self.registry_path.exists() and registry_corrupt(raw):
+                backup_name = self._backup_corrupt_registry()
             self._write_atomic(
                 self.registry_path,
                 json.dumps(enrolled, ensure_ascii=False, indent=2) + "\n",
             )
             self._delete_pending()
-            return "ok", {"token": token, "label": effective}
+            outcome = {"token": token, "label": effective}
+            if backup_name is not None:
+                outcome["recovered"] = True
+                outcome["backup"] = backup_name
+            return "ok", outcome
+
+    def _backup_corrupt_registry(self) -> str:
+        """Copy the registry's current bytes to
+        ``paired-devices.json.corrupt-<unix-timestamp>`` (0600, atomic,
+        same state dir) and return the backup file's name. The copy
+        runs BEFORE anything replaces the file, and an existing backup
+        name is never overwritten: a same-second collision disambiguates
+        with ``-1``, ``-2``, … (the claim holds the lock, so writers
+        serialise). The bytes are copied verbatim — a file too broken
+        even for a text decode is exactly the file worth keeping."""
+        original = self.registry_path.read_bytes()
+        base = f"{DEVICES_FILENAME}.corrupt-{int(self._now())}"
+        backup = self.state_dir / base
+        suffix = 0
+        while backup.exists():
+            suffix += 1
+            backup = self.state_dir / f"{base}-{suffix}"
+        self._write_atomic(backup, original)
+        return backup.name
+
+    def restore_backup(self, source: Path) -> dict:
+        """``devices restore`` (parity wave 2 S2): replace the registry
+        with a coerced copy of ``source`` (a ``.corrupt-*`` backup).
+        The same strictness the live registry gets — ``coerce_registry``
+        drops unusable entries; their originals survive only in the
+        backup file, which this verb never deletes. Restored entries
+        keep their ``tokenHash``, so the phones holding those tokens
+        work again with no re-pairing.
+
+        Fail closed WITHOUT writing when the backup is unreadable or
+        unparsable, is not a registry shape, or would coerce to zero
+        devices — a well-formed empty registry lifts enforcement, and a
+        restore that silently un-arms the gate is the one fail-open this
+        verb must never be. The backup must also live INSIDE the state
+        dir: a symlink that resolves elsewhere would turn a "backup"
+        name into an arbitrary-file overwrite, so a path escaping the
+        dir is refused before anything is read. Raises ValueError for
+        refused content, lets OSError name an unreadable backup."""
+        with self._lock:
+            resolved_dir = self.state_dir.resolve()
+            resolved_source = source.resolve()
+            if resolved_source.parent != resolved_dir:
+                raise ValueError(
+                    f"backup must live inside the state dir ({self.state_dir}) — "
+                    f"\"{source}\" resolves outside it"
+                )
+            raw = json.loads(source.read_bytes())
+            if not isinstance(raw, dict) or not isinstance(raw.get("devices"), list):
+                raise ValueError("the backup is not a paired-devices registry")
+            coerced = coerce_registry(raw)
+            if not coerced["devices"]:
+                raise ValueError(
+                    "the backup holds no usable device — restoring it would "
+                    "leave pairing unenforced"
+                )
+            self._write_atomic(
+                self.registry_path,
+                json.dumps(coerced, ensure_ascii=False, indent=2) + "\n",
+            )
+            return coerced
 
     def _delete_pending(self) -> None:
         """Deleting a spent pairing is idempotent."""

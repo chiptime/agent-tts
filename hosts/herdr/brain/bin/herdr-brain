@@ -754,7 +754,7 @@ case "${1:-status}" in
     echo "Usage: bin/herdr-brain [--no-first-run] [status|url|call|restart|stop|first-run|doctor|pair|devices|msg|push|crew|serve|unserve|qr|logs|config|_daemon|_daemon-supervised]"
     echo "  call   open the voice-call UI in the desktop browser (HERDR_BRAIN_BROWSER overrides the opener)"
     echo "  pair   mint a one-time code: the phone spends it in Ajustes to enrol this device (write access turns on with the first pairing)"
-    echo "  devices {list|revoke <label>}   show paired devices, or drop one (applies without a restart)"
+    echo "  devices {list|revoke <label>|restore <backup>}   manage paired devices; restore brings a corrupt-registry backup back (applies without a restart)"
     echo "  msg    {who|send|reply|inbox|status|cancel}   brain messages between agent panes (run from inside a pane)"
     echo "  push   {import <dotenv>|list|test}   Web Push keys and subscriptions (import prints only the public key)"
     echo "  crew   {init|join-token|join|list|remove|promote|rotate-secret}   multi-machine federation (manual promotion)"

@@ -409,6 +409,7 @@
     "pair.duplicate_label": "That name is already in use — choose another.",
     "pair.generic_fail": "Could not pair ({reason}).",
     "pair.paired_toast": "Device paired — writing is now enabled",
+    "pair.recovered": "The device registry was corrupt: previously paired devices may be lost. Backup saved as «{backup}» — recover it with `herdr-brain devices restore`.",
 
     /* ---- push card ---- */
     "push.title": "Push notices",

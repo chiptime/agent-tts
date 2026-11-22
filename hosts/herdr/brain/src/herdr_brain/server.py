@@ -4062,12 +4062,25 @@ def create_app(
         status, outcome = pairing_store.claim(body.code, label)
         if status != "ok":
             raise HTTPException(status_code=400, detail=outcome)
+        detail = {"label": outcome["label"]}
+        if outcome.get("recovered"):
+            # Parity wave 2 S2 (O2): the claim rewrote a CORRUPT
+            # registry — the audit trail and the phone both learn which
+            # backup file holds the lost devices.
+            detail["recovered"] = True
+            detail["backup"] = outcome["backup"]
         audit_log.record({
             "action": "pair",
             "device": audit_device(request),  # set only when a paired device re-pairs
-            "detail": {"label": outcome["label"]},
+            "detail": detail,
         })
-        return {"token": outcome["token"], "label": outcome["label"]}
+        # The valid-registry shape is exactly {token, label}; the
+        # recovery fields ride additively only when a backup was made.
+        response = {"token": outcome["token"], "label": outcome["label"]}
+        if outcome.get("recovered"):
+            response["recovered"] = True
+            response["backup"] = outcome["backup"]
+        return response
 
     def _devices_payload(request: Request) -> dict:
         # "current" is resolved at RESPONSE time, not from the

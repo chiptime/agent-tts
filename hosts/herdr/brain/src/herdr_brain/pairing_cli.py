@@ -1,5 +1,5 @@
 """CLI for device pairing: ``pair``, ``devices list|revoke|set-expiry|
-clear-expiry``.
+clear-expiry|restore``.
 
 Usage:
     python -m herdr_brain.pairing_cli pair [--label LABEL] [--expires DUR]
@@ -7,6 +7,7 @@ Usage:
     python -m herdr_brain.pairing_cli devices revoke <label>
     python -m herdr_brain.pairing_cli devices set-expiry <label> <dur>
     python -m herdr_brain.pairing_cli devices clear-expiry <label>
+    python -m herdr_brain.pairing_cli devices restore <backup>
 
 The operator's half of device pairing (doc 01 §7). The pure decisions
 all live in ``pairing.py``; this module is the terminal, the two files
@@ -33,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Optional, Sequence
@@ -46,6 +48,7 @@ from .pairing import (
     coerce_registry,
     normalize_label,
     parse_duration,
+    registry_corrupt,
 )
 
 EXIT_OK = 0
@@ -144,29 +147,69 @@ def cmd_devices_list(args, state_dir: Optional[Path] = None) -> int:
     registry = _read_registry(resolved)
     devices = registry["devices"]
     if not devices:
-        print("no devices paired — pairing is not enforced, and writes pass on the access gates alone.")
-        print("Run `herdr-brain pair` to enrol the first device; that is also what turns the requirement on.")
-        return EXIT_OK
-    import time as time_module
+        if _registry_file_corrupt(resolved):
+            # The corrupt file is the one "empty" listing that must not
+            # claim enforcement is off — the gate stays ON, fail closed
+            # (doc 01 AC10), and the loss gets named (parity wave 2 S2).
+            print("note: paired-devices.json is corrupt — the devices it held are not "
+                  "shown, and pairing stays enforced with nobody authorized (fail closed).")
+            print("Run `herdr-brain pair` to enrol a device again; its claim will back "
+                  "the corrupt file up before rewriting it.")
+        else:
+            print("no devices paired — pairing is not enforced, and writes pass on the access gates alone.")
+            print("Run `herdr-brain pair` to enrol the first device; that is also what turns the requirement on.")
+    else:
+        import time as time_module
 
-    now = time_module.time()
-    width = max(len(d["label"]) for d in devices)
-    for device in devices:
-        line = (
-            f"{device['label'].ljust(width)}  "
-            f"created {_stamp(device['createdAt'])}  "
-            f"last seen {_stamp(device['lastSeenAt'])}"
-        )
-        # B7: a row WITHOUT a deadline (every pre-S11 registry, and any
-        # device whose expiry was cleared) keeps the exact legacy line —
-        # no trailing column — so stdout pinned before S11 still holds.
-        # The expiry is shown only where one actually exists.
-        expires_at = device.get("expiresAt")
-        if expires_at is not None:
-            state = "CADUCADO" if expires_at <= now else "caduca"
-            line += f"  {state} {_stamp(expires_at)}"
+        now = time_module.time()
+        width = max(len(d["label"]) for d in devices)
+        for device in devices:
+            line = (
+                f"{device['label'].ljust(width)}  "
+                f"created {_stamp(device['createdAt'])}  "
+                f"last seen {_stamp(device['lastSeenAt'])}"
+            )
+            # B7: a row WITHOUT a deadline (every pre-S11 registry, and any
+            # device whose expiry was cleared) keeps the exact legacy line —
+            # no trailing column — so stdout pinned before S11 still holds.
+            # The expiry is shown only where one actually exists.
+            expires_at = device.get("expiresAt")
+            if expires_at is not None:
+                state = "CADUCADO" if expires_at <= now else "caduca"
+                line += f"  {state} {_stamp(expires_at)}"
+            print(line)
+    for line in _corrupt_backup_hints(resolved):
         print(line)
     return EXIT_OK
+
+
+def _registry_file_corrupt(state_dir: Path) -> bool:
+    """Whether the live registry file exists but fails the same
+    strictness every read applies (parity wave 2 S2): unparsable or
+    shape-broken, so devices it still holds are invisible."""
+    path = state_dir / DEVICES_FILENAME
+    if not path.exists():
+        return False
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raw = None
+    return registry_corrupt(raw)
+
+
+def _corrupt_backup_hints(state_dir: Path) -> list:
+    """The one-line recovery note (parity wave 2 S2) naming any
+    ``.corrupt-*`` backup waiting under the state dir — empty for the
+    healthy machine, so today's list output carries no chatter."""
+    backups = sorted(state_dir.glob(f"{DEVICES_FILENAME}.corrupt-*"))
+    if not backups:
+        return []
+    names = ", ".join(b.name for b in backups)
+    return [
+        f"note: corrupt-registry backup(s) on disk: {names} — "
+        "`herdr-brain devices restore <name>` brings those devices back "
+        "(their tokens keep working, no re-pairing needed)."
+    ]
 
 
 def cmd_devices_revoke(args, state_dir: Optional[Path] = None) -> int:
@@ -275,6 +318,64 @@ def cmd_devices_clear_expiry(args, state_dir: Optional[Path] = None) -> int:
     return EXIT_OK
 
 
+def cmd_devices_restore(args, state_dir: Optional[Path] = None) -> int:
+    """``devices restore <backup>`` (parity wave 2 S2): replace the
+    registry with a corrupt-file backup's devices. CLI-only — never a
+    server route, so recovery adds no remote surface — and audited like
+    the other registry verbs. Only a BARE backup name that matches the
+    ``paired-devices.json.corrupt-*`` pattern is accepted: no paths, no
+    absolute forms, no ``..`` (verifier blocker) — the store re-coerces
+    the resolved file with the live registry's strictness, refuses to
+    write anything invalid, and refuses a backup resolving outside the
+    state dir (a symlink escaping it included)."""
+    name = args.backup
+    if not name:
+        print("usage: herdr-brain devices restore <backup>", file=sys.stderr)
+        return EXIT_USAGE
+    # A state-dir operation takes the NAME `devices list` prints, never
+    # a path: a separator or an absolute form is an invalid argument,
+    # not something to resolve against the caller's cwd.
+    if Path(name).name != name:
+        print(
+            f"error: restore takes the bare backup name shown by "
+            f"`devices list` — no paths (got \"{name}\")",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
+    if not re.fullmatch(
+        re.escape(DEVICES_FILENAME) + r"\.corrupt-[0-9]+(?:-[0-9]+)?", name
+    ):
+        print(
+            f"error: no backup named \"{name}\" — backups are named "
+            f"{DEVICES_FILENAME}.corrupt-<timestamp> under the state dir "
+            "(`devices list` prints them)",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
+    resolved = _resolve_state_dir(state_dir)
+    store = _store(resolved)
+    try:
+        restored = store.restore_backup(resolved / name)
+    except ValueError as exc:
+        print(f"error: {exc} — refusing (fail closed)", file=sys.stderr)
+        return EXIT_FAIL
+    except OSError as exc:
+        print(f"error: could not read the backup — {exc}", file=sys.stderr)
+        return EXIT_FAIL
+    _audit(resolved).record({
+        "action": "device.restore",
+        "detail": {
+            "backup": name,
+            "labels": [d["label"] for d in restored["devices"]],
+        },
+    })
+    labels = ", ".join(d["label"] for d in restored["devices"])
+    print(f"restored {len(restored['devices'])} device(s) from {name}: {labels}")
+    print("  their existing tokens keep working — no re-pairing needed; "
+          "the registry contents the file held before are gone (replaced).")
+    return EXIT_OK
+
+
 def _resolve_state_dir(state_dir: Optional[Path]) -> Path:
     if state_dir is None:
         return load_settings().state_dir
@@ -322,6 +423,12 @@ def main(argv: Optional[Sequence[str]] = None, state_dir: Optional[Path] = None)
         help="remove one device's token deadline (the token goes back to never expiring)",
     )
     clear_expiry_parser.add_argument("label", nargs="?", default="")
+    restore_parser = devices_sub.add_parser(
+        "restore",
+        help="replace the registry with a corrupt-file backup's devices "
+        "(`devices list` names the backups on disk)",
+    )
+    restore_parser.add_argument("backup", nargs="?", default="")
 
     args = parser.parse_args(argv)
 
@@ -336,14 +443,17 @@ def main(argv: Optional[Sequence[str]] = None, state_dir: Optional[Path] = None)
             return cmd_devices_set_expiry(args, state_dir)
         if args.subverb == "clear-expiry":
             return cmd_devices_clear_expiry(args, state_dir)
+        if args.subverb == "restore":
+            return cmd_devices_restore(args, state_dir)
         print(
-            "usage: herdr-brain devices {list|revoke|set-expiry|clear-expiry}",
+            "usage: herdr-brain devices {list|revoke|set-expiry|clear-expiry|restore}",
             file=sys.stderr,
         )
         print("  list          the paired devices, with pairing/seen/expiry stamps", file=sys.stderr)
         print("  revoke        drop one device by label: `devices revoke <label>`", file=sys.stderr)
         print("  set-expiry    arm a token deadline: `devices set-expiry <label> <dur>` (30d, 12h…)", file=sys.stderr)
         print("  clear-expiry  remove the deadline: `devices clear-expiry <label>`", file=sys.stderr)
+        print("  restore       bring a corrupt-file backup's devices back: `devices restore <backup>`", file=sys.stderr)
         return EXIT_USAGE
     parser.print_help(sys.stderr)
     return EXIT_USAGE

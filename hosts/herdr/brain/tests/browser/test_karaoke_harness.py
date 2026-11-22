@@ -178,10 +178,10 @@ EXPECTED_DIGESTS = {
     # Both i18n re-pinned for parity-f7g S5: the track.* keys (the
     # tracker card's Spanish lines and their English locale ride).
     # Re-pinned for parity T4/S4: newsession.err_resume_workspace.
-    # Re-pinned for parity-w2 S3: stop.dialog_open (the localized
-    # «Hay un diálogo abierto; respóndelo primero.» refusal copy).
-    "/i18n/en.js": "45f4d1b63eca2ed9dc9deaad798a6dde36d94e1f05dd1fb63392f70a168b4b6b",
-    "/i18n/es.js": "510a845bb0a589040975cf87960e43f205912de21fbee250c07593c0cb9a3d8d",
+    # Re-pinned for parity wave 2 merged bytes: stop.dialog_open (S3) and
+    # pair.recovered (S2) both live in the i18n dictionaries.
+    "/i18n/en.js": "c1978c61deb37c8558f6f502a42b65b41090c0fb9c14988a7d2bd7dbc89990ae",
+    "/i18n/es.js": "130a48ed90b2f2cb7355b31bb60b84babf3e0a2ed0ebd66293cb7fcbabbde16c",
     "/settings.js": "1c2cf3ed92bf959c19ecde0107618b8d1ff0690d2c6fa7c842a2fdc551e05f72",
     "/updates.js": "7f87250cf6cd9c2b8944da632fe036d0c18a87a90f48f70b84e18bcd338cfa84",
     "/calls.js": "9b9ec591709d282c6e673770b2ffc1ed1562650104d8e8393126d186aa764165",
