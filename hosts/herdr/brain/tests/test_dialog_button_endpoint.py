@@ -2687,3 +2687,38 @@ class TestMenuLetterRecipes:
         assert response.status_code == 200
         assert recorded["recipe"] == [["d"]]
         assert recorded["plain"] == []
+
+
+class TestModalMenuView:
+    """T5/S7: the menu rides the EXISTING button rendering — /view
+    publishes the same structured shape every other kind uses, no
+    static change behind it."""
+
+    MARKETPLACES = (FIXTURES / "claude-menu-marketplaces.txt").read_text(
+        encoding="utf-8"
+    )
+
+    def test_the_modal_view_publishes_menu_buttons_with_the_cancel_flag(
+        self, make_client
+    ):
+        client, _stub = make_client([BLOCKED_CLAUDE], self.MARKETPLACES)
+
+        body = client.get(
+            "/view", params={"pane_id": "w1:p3", "modal": 1}
+        ).json()
+
+        structured = body["structured"]
+        assert structured["kind"] == "menu"
+        assert structured["recipe"] == "keys"
+        assert [(o["label"], o["keys"] if "keys" in o else None) for o in structured["options"]] == [
+            ("Select", None),
+            ("Update", None),
+            ("Remove", None),
+            ("Go back", None),
+        ]
+        # The recipes stay server-side (the payload never carries
+        # executable material); the Esc row ALONE carries the flag.
+        assert [o.get("cancel") for o in structured["options"]] == [
+            None, None, None, True,
+        ]
+        assert "adjust" not in structured

@@ -1901,3 +1901,54 @@ class TestVoiceAnswerDeviceAttribution:
         lines = [json.loads(x) for x in path.read_text().splitlines()]
         assert len(lines) == 1
         assert "device" not in lines[0]  # omitted, never null
+
+
+class TestMenuVoiceAnswers:
+    """T5/S7: a spoken answer to a footer-governed menu flows through
+    the SAME binding and the SAME rejection codes — the letter recipe
+    (S3) is what the structured path sends."""
+
+    MARKETPLACES = (
+        Path(__file__).parent / "fixtures" / "dialogs" / "claude-menu-marketplaces.txt"
+    ).read_text(encoding="utf-8")
+
+    CLAUDE_BLOCKED = None  # built in the fixture: same pane, claude agent
+
+    @pytest.fixture
+    def menu_tools(self, settings):
+        claude = AgentInfo(**{**BLOCKED_AGENT.__dict__, "agent": "claude"})
+        type(self).CLAUDE_BLOCKED = claude
+        stub = DialogStub(screen=self.MARKETPLACES)
+        stub._agents = [claude]
+        built = BrainTools(settings, herdr=stub)
+        return built, stub
+
+    def test_opcion_2_sends_the_footer_letter(self, menu_tools):
+        built, stub = menu_tools
+        explain_and_advance_turn(built, self.CLAUDE_BLOCKED)
+
+        result = json.loads(
+            built.answer_dialog("selecciona la opción 2", self.CLAUDE_BLOCKED)
+        )
+
+        assert result["outcome"] == "answered"
+        assert result["option"] == 2
+        # The footer named `u to update`: the recipe is ONE key.
+        assert stub.key_calls == [{"pane_id": "w1:p9", "keys": ["u"]}]
+
+    def test_a_drifted_menu_refuses_with_the_binding_code(self, menu_tools):
+        """The menu changed underfoot: the SAME rejection as every other
+        dialog — refused "changed", nothing is sent, and the new screen
+        is marked unexplained so it is spoken before any key may move."""
+        built, stub = menu_tools
+        explain_and_advance_turn(built, self.CLAUDE_BLOCKED)
+
+        drifted = self.MARKETPLACES.replace("Enter to select", "Enter to chosen")
+        stub._dialog_screen = drifted
+        result = json.loads(
+            built.answer_dialog("selecciona la opción 2", self.CLAUDE_BLOCKED)
+        )
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "changed"
+        assert stub.key_calls == []

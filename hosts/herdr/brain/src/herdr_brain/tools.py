@@ -2605,6 +2605,45 @@ class BrainTools:
                     "; ask the user for the exact option number",
                 )
             index = matches[0]
+        # T10/S11+S7: a structured MENU has no row-to-button mapping —
+        # its options are the footer's own keys, never the highlighted
+        # rows — so the spoken option rides the SAME guarded structured
+        # path a PWA tap uses (the S5 delegation discipline). Everything
+        # else keeps the legacy walk below, byte for byte.
+        structured = self._spoken_structured_model(active)
+        if (
+            structured is not None
+            and structured.kind == "menu"
+            and 0 <= index < len(structured.options)
+            and structured.options[index].keys
+        ):
+            result = self.answer_structured_dialog(
+                active.pane_id, structured.fingerprint, option=index
+            )
+            if result["outcome"] != "answered":
+                return refused(
+                    result.get("reason") or "changed",
+                    result.get("detail") or "",
+                )
+            chosen_menu = options[index]
+            audit_attempt(
+                "answered",
+                extra={"option": chosen_menu.get("n"), "keys": result.get("keys")},
+            )
+            return json.dumps(
+                {
+                    "outcome": "answered",
+                    "pane_id": active.pane_id,
+                    "option": chosen_menu.get("n"),
+                    "title": chosen_menu.get("title"),
+                    "keys": result.get("keys"),
+                    "note": (
+                        "the user's choice was sent to the dialog; tell the user "
+                        "exactly which option was pressed and nothing more"
+                    ),
+                },
+                ensure_ascii=False,
+            )
         selected = dialog.get("selected")
         if selected not in numbers:
             return refused(
