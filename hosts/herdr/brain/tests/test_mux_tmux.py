@@ -665,6 +665,39 @@ class TestFailureMapping:
             adapter(runner).read_screen("%3")
         assert excinfo.value.reason == "unreachable"
 
+    def test_lost_server_transport_text_is_unreachable(self):
+        # S12 A2: a client that lost the server mid-call prints the
+        # transport story, not a refusal. The exact text `lost server`
+        # is reference-pinned (Collie's bridge/mux/tmux/protocol.ts
+        # NO_SERVER regex and its test: "a server that died DURING the
+        # call is `unreachable` too — the transport, not a refusal");
+        # it reached `_exit_reason` un-classified as `refused`, which
+        # is not retry-worthy.
+        runner = RecordedRunner((("capture-pane",), 1, "", "lost server\n"))
+        with pytest.raises(MuxRefusal) as excinfo:
+            adapter(runner).read_screen("%3")
+        assert excinfo.value.reason == "unreachable"
+
+    def test_bare_server_exited_is_unreachable(self):
+        # S12 A2: `server exited` is a REAL tmux 3.8 message constant
+        # (`strings /usr/bin/tmux` lists it next to
+        # `server exited unexpectedly`); only the exact long form was
+        # classified, so the bare variant mapped `refused`.
+        runner = RecordedRunner((("capture-pane",), 1, "", "server exited\n"))
+        with pytest.raises(MuxRefusal) as excinfo:
+            adapter(runner).read_screen("%3")
+        assert excinfo.value.reason == "unreachable"
+
+    def test_server_exited_suffixed_is_still_unreachable(self):
+        # The substring keeps suffix-carrying variants honest without
+        # pinning an exact string that was never captured live.
+        runner = RecordedRunner(
+            (("capture-pane",), 1, "", "server exited unexpectedly (11)\n")
+        )
+        with pytest.raises(MuxRefusal) as excinfo:
+            adapter(runner).read_screen("%3")
+        assert excinfo.value.reason == "unreachable"
+
     def test_no_server_running_is_unreachable(self):
         runner = RecordedRunner(
             (("list-panes",), 1, "", "no server running on /tmp/tmux-1000/default")

@@ -67,12 +67,26 @@ _EVIDENCE = {
 
 
 def _exit_reason(detail: str) -> str:
-    """Maps a tmux failure text onto the refusal vocabulary."""
+    """Maps a tmux failure text onto the refusal vocabulary.
+
+    S12 A2: connection-loss stories are TRANSPORT, not refusals — the
+    only retry-worthy reason is ``unreachable``. tmux 3.8 carries the
+    constants ``server exited``, ``server exited unexpectedly`` (both
+    live-probed mid-call on an isolated ``-L`` server), ``no server
+    running on %s`` and ``error connecting to %s (%s)``; the substring
+    ``server exited`` covers those variants and any suffix, and
+    ``lost server`` is reference-pinned (Collie's tmux NO_SERVER:
+    "a server that died DURING the call is `unreachable` too — the
+    transport, not a refusal"). A missing pane/window target is the
+    multiplexer understanding and saying no: ``gone``. Everything
+    else stays ``refused``.
+    """
     text = detail.lower()
     if (
         "no server running" in text
         or "error connecting" in text
-        or text == "server exited unexpectedly"
+        or "lost server" in text
+        or "server exited" in text
     ):
         return "unreachable"
     if "can't find pane" in text or "can't find window" in text:
