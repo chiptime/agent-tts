@@ -27,7 +27,7 @@ const FULL_CONFIG = {
     { id: "cmd2", label: "Buscar", command: "/grep " },
   ],
   key_presets: [
-    { id: "k1", label: "Reintentar", keys: "up enter" },
+    { id: "k1", label: "Reintentar", keys: ["up", "enter"] },
   ],
   launchers: [
     { id: "l1", label: "Shell aquí", no_prompts: false },
@@ -50,12 +50,17 @@ test("malformed rows are dropped, the rest of the surface survives", () => {
       { id: "z", label: "z" },     /* no text */
     ],
     commands: [{ id: "c", label: "c", command: "/x" }, { id: "c2", label: "c2" }],
-    key_presets: [{ id: "k", label: "k", keys: "enter" }, "garbage"],
+    key_presets: [
+      { id: "k", label: "k", keys: ["enter"] },
+      { id: "old", label: "old", keys: "enter" },
+      { id: "empty", label: "empty", keys: [] },
+      { id: "number", label: "number", keys: [1] },
+    ],
     launchers: [{ id: "l", label: "l" }, { id: "l2" }],
   });
   assert.deepEqual(model.quick_replies, [FULL_CONFIG.quick_replies[0]]);
   assert.deepEqual(model.commands, [{ id: "c", label: "c", command: "/x" }]);
-  assert.deepEqual(model.key_presets, [{ id: "k", label: "k", keys: "enter" }]);
+  assert.deepEqual(model.key_presets, [{ id: "k", label: "k", keys: ["enter"] }]);
   assert.deepEqual(model.launchers, [{ id: "l", label: "l", no_prompts: false }]);
 });
 
@@ -166,7 +171,7 @@ function makeDeps() {
       fillComposer: (text) => calls.fills.push(text),
       post: (url, body) => {
         calls.posts.push({ url, body });
-        return Promise.resolve({ status: 200, json: () => Promise.resolve({}) });
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) });
       },
       show: () => { calls.shown += 1; },
       hide: () => { calls.hidden += 1; },
@@ -222,6 +227,23 @@ test("a key preset posts the exact payload to /operator/preset", async () => {
   preset.click();
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.deepEqual(calls.posts, [{ url: "/operator/preset", body: { pane_id: "w2:p3", id: "k1" } }]);
+  assert.deepEqual(calls.toasts, []);
+});
+
+test("a rejected preset request shows one error toast and never retries", async () => {
+  const { deps, calls } = makeDeps();
+  const dock = createDock(Object.assign(deps, {
+    getConfig: () => Promise.resolve(FULL_CONFIG),
+    post: (url, body) => {
+      calls.posts.push({ url, body });
+      return Promise.reject(new TypeError("Failed to fetch"));
+    },
+  }));
+  await dock.update("opencode", "w2:p3");
+  deps.root.querySelectorAll('[data-row="preset:k1"]')[0].click();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(calls.posts, [{ url: "/operator/preset", body: { pane_id: "w2:p3", id: "k1" } }]);
+  assert.deepEqual(calls.toasts, ["T:dock.preset_failed"]);
 });
 
 test("a no_prompts launcher needs two taps before it posts", async () => {

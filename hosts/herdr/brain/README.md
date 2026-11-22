@@ -944,6 +944,13 @@ Rows are identified by `id` (explicit) or a slug of the label, and
 `scope = "<agent-family>"` makes the row REPLACE the global catalog for
 that family (substitution, not fusion).
 
+Preset key names are normalized at load time (for example, `Down` →
+`down` and `Escape` → `esc`), still subject to the existing eight-key
+limit and send-key allowlist. A failed preset request shows a localized
+error in the PWA without retrying automatically. Launcher arguments
+containing control characters (including bidi controls), line separators
+or paragraph separators cause the whole row to be skipped, not rewritten.
+
 Routes (the launcher/key shapes are a frozen contract for the PWA):
 
 ```text

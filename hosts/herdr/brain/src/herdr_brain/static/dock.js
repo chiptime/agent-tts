@@ -34,6 +34,10 @@
     if (!row || typeof row !== "object") return false;
     if (typeof row.id !== "string" || !row.id) return false;
     if (typeof row.label !== "string" || !row.label) return false;
+    if (field === "keys") {
+      return Array.isArray(row.keys) && row.keys.length > 0 &&
+        row.keys.every(function (key) { return typeof key === "string" && key.length > 0; });
+    }
     if (field && (typeof row[field] !== "string" || !row[field])) return false;
     return true;
   }
@@ -99,7 +103,7 @@
     var toast = deps.toast || function () {};
     var sendReply = deps.sendReply || function () {};
     var fillComposer = deps.fillComposer || function () {};
-    var post = deps.post || function () { return Promise.resolve({ status: 200, json: function () { return Promise.resolve({}); } }); };
+    var post = deps.post || function () { return Promise.resolve({ ok: true, status: 200, json: function () { return Promise.resolve({}); } }); };
     var show = deps.show || function () {};
     var hide = deps.hide || function () {};
 
@@ -198,7 +202,10 @@
         return;
       }
       if (kind === "preset") {
-        post("/operator/preset", paneBody(id));
+        function presetFailed() { toast(t("dock.preset_failed")); }
+        post("/operator/preset", paneBody(id)).then(function (resp) {
+          if (!resp.ok) presetFailed();
+        }, presetFailed);
         return;
       }
       if (kind === "launch") {

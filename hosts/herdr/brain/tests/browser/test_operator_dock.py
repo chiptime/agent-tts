@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from urllib.parse import urlsplit
 
+import pytest
 from playwright.sync_api import expect
 
 AGENT = [
@@ -52,7 +53,7 @@ FULL_CONFIG = {
         {"id": "cmd1", "label": "Compactar", "command": "/compact"},
         {"id": "cmd2", "label": "Buscar", "command": "/grep "},
     ],
-    "key_presets": [{"id": "k1", "label": "Reintentar", "keys": "up enter"}],
+    "key_presets": [{"id": "k1", "label": "Reintentar", "keys": ["up", "enter"]}],
     "launchers": [
         {"id": "l1", "label": "Shell aquí", "no_prompts": False},
         {"id": "l2", "label": "Todo el panel", "no_prompts": True},
@@ -140,9 +141,28 @@ def test_complete_command_sends(karaoke_app):
 
 def test_key_preset_posts_the_exact_payload(karaoke_app):
     harness = dock_harness(karaoke_app, FULL_CONFIG)
-    dock_row(harness, "preset:k1").click()
-    harness.page.wait_for_timeout(200)
+    with harness.page.expect_response("**/operator/preset") as sent:
+        dock_row(harness, "preset:k1").click(timeout=3000)
+    assert sent.value.ok
     assert posts_of(harness, "/operator/preset") == [{"pane_id": "w1:p2", "id": "k1"}]
+    assert harness.page.locator("#toast").is_hidden()
+
+
+@pytest.mark.parametrize(("locale", "message"), [
+    ("es", "No se pudo enviar el preset — prueba otra vez"),
+    ("en", "Could not send the preset — try again"),
+])
+def test_key_preset_send_failure_shows_localized_toast(karaoke_app, locale, message):
+    harness = dock_harness(karaoke_app, FULL_CONFIG)
+    harness.page.evaluate("locale => window.I18N.setLocale(locale)", locale)
+    harness.respond("/operator/preset", {"detail": "send-keys failed"}, method="POST", status=502)
+    with harness.page.expect_response("**/operator/preset") as sent:
+        dock_row(harness, "preset:k1").click(timeout=3000)
+    assert sent.value.status == 502
+    assert posts_of(harness, "/operator/preset") == [{"pane_id": "w1:p2", "id": "k1"}]
+    toast = harness.page.locator("#toast")
+    expect(toast).to_be_visible(timeout=3000)
+    expect(toast).to_have_text(message)
 
 
 def test_no_prompts_launcher_needs_two_taps(karaoke_app):
@@ -211,5 +231,3 @@ def test_injection_looking_labels_render_literally(karaoke_app):
         "<script>window.__pwned=2</script>"
     assert page.evaluate("() => window.__pwned") is None
     assert page.locator("#operator-dock a").count() == 0
-
-

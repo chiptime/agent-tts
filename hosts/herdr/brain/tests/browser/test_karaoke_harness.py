@@ -173,7 +173,7 @@ EXPECTED_DIGESTS = {
     "/vad.js": "0bb7e5891c2da564aa1ab88b763a6d85381f374b0ed4c90e8eab498b4ffe2cad",
     # S4/S3 PWA unit: i18n runtime + dictionaries, settings sheet,
     # update notice, operator dock, offline-shell sw.js.
-    "/dock.js": "4a5dc20d575c3c9e5f098116fc9314f24297b2934cb3142bc885b6e1d0155adb",
+    "/dock.js": "8f41ef8e9b5365739f50071a3033bef1e75e242f56d72d2b13ccc78fe11134b6",
     "/i18n.js": "8bcd2ceb9f56109afaa0ec158e1a6f002799c4a983261b9d58cd38723c06719f",
     # Both i18n re-pinned for parity-f7g S5: the track.* keys (the
     # tracker card's Spanish lines and their English locale ride).
