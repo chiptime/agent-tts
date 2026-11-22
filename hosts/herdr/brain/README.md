@@ -973,8 +973,12 @@ exposed to the LLM. A client can never supply a command line or a key
 sequence — only the id of a row the operator authored.
 
 ```bash
-bin/herdr-brain config check     # per-file report; exit 1 if any row was skipped
+bin/herdr-brain config check     # validates files on disk; exit 1 on any issue
 ```
+
+Brain and Collie use the same four filenames but different schemas.
+See [the Collie compatibility report](operator-toml-compatibility.md)
+before copying a catalog between them.
 
 ## Device pairing and the access gate
 
