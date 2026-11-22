@@ -610,12 +610,23 @@ class OperatorConfig:
                 return entry.rows, entry.issues
             rows, issues = _load_surface(path, file_name, validate)
             if rows is None:
-                # roots.toml is a separate cwd authorization policy and
-                # remains fail-closed. Only the four catalogs hold rows.
-                rows = entry.rows if entry is not None and file_name != FILE_ROOTS else ()
-                if rows:
-                    issue = issues[0]
-                    issues = (replace(issue, reason=f"{issue.reason}; keeping the last valid catalog"),)
+                # The three dock catalogs hold their last valid rows through
+                # a parse failure: an operator mid-edit keeps their buttons.
+                # Launchers and roots are authorization surfaces and fail
+                # closed, so a valid removal edit the reload never observed
+                # cannot be outlived by a stale authorization row.
+                if file_name in (FILE_LAUNCHERS, FILE_ROOTS):
+                    rows = ()
+                else:
+                    rows = entry.rows if entry is not None else ()
+                    if rows:
+                        issue = issues[0]
+                        issues = (
+                            replace(
+                                issue,
+                                reason=f"{issue.reason}; keeping the last valid catalog",
+                            ),
+                        )
             # Cache the failed signature too, so polling never repeats a warning.
             self._cache[surface_name] = _CacheEntry(signature, rows, issues)
             self._reload_counts[surface_name] += 1

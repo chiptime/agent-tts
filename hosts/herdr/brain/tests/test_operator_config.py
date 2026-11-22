@@ -497,6 +497,40 @@ def test_invalid_utf8_is_an_unparsable_reload(writer):
     assert issues_for(cfg, "keys.toml")[0].reason.startswith("invalid TOML:")
 
 
+def test_broken_launchers_file_serves_no_launchers(writer, caplog):
+    """Launchers are an execution allowlist: a broken file fails closed."""
+    writer("launchers.toml", '[[launchers]]\nlabel = "Edit"\nargv = ["gedit", "."]\n')
+    cfg = oc.OperatorConfig()
+    assert [row.id for row in cfg.launchers()] == ["edit"]
+    writer("launchers.toml", "[[launchers")
+    assert cfg.launchers() == ()
+    with pytest.raises(oc.UnknownRowError):
+        cfg.launch_plan("edit")
+    issue, = issues_for(cfg, "launchers.toml")
+    assert issue.row == 0
+    assert issue.reason.startswith("invalid TOML:")
+    assert "keeping the last valid catalog" not in issue.reason
+    assert sum("launchers.toml: invalid TOML:" in msg for msg in caplog.messages) == 1
+
+
+def test_an_unobserved_removal_cannot_be_outlived_by_a_broken_save(writer):
+    """valid(with Zed) -> valid(without Zed) unobserved -> broken -> Zed refused."""
+    writer("launchers.toml", '[[launchers]]\nlabel = "Zed"\nargv = ["zed"]\n')
+    cfg = oc.OperatorConfig()
+    assert [row.id for row in cfg.launchers()] == ["zed"]
+    # A valid edit removing the row, never observed by a request...
+    writer("launchers.toml", '[[launchers]]\nlabel = "Other"\nargv = ["ls"]\n')
+    # ...then a broken save before the next one lands last on disk.
+    writer("launchers.toml", "[[launchers")
+    with pytest.raises(oc.UnknownRowError):
+        cfg.launch_plan("zed")
+    # Repairing without Zed keeps Zed refused; the allowlist never revived it.
+    writer("launchers.toml", '[[launchers]]\nlabel = "Other"\nargv = ["ls"]\n')
+    assert [row.id for row in cfg.launchers()] == ["other"]
+    with pytest.raises(oc.UnknownRowError):
+        cfg.launch_plan("zed")
+
+
 def test_missing_file_is_an_empty_list_without_issues(tmp_path, monkeypatch):
     monkeypatch.setenv("HERDR_BRAIN_CONFIG_DIR", str(tmp_path))
     cfg = oc.OperatorConfig()
