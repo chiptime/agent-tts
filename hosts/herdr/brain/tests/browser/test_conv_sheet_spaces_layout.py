@@ -127,3 +127,27 @@ def test_spaces_row_scrolls_sideways_and_every_space_stays_tappable(phone_app):
     last = page.locator("#conv-spaces button.cs-space[data-space='w13']")
     last.scroll_into_view_if_needed()
     assert last.is_visible()
+
+
+def test_conversation_sheet_reaches_the_viewport_floor(phone_app):
+    """The conversation sheet anchors at the viewport floor and covers the
+    call footer, like the calls popup — no reserved strip below it."""
+    page = phone_app.page
+    open_conv_sheet(page)
+    page.wait_for_timeout(350)  # let the slide-in transition settle
+    geo = page.evaluate(
+        """() => {
+            const sheet = document.getElementById('conv-sheet');
+            const s = sheet.getBoundingClientRect();
+            const b = document.getElementById('call-btn').getBoundingClientRect();
+            const hit = document.elementFromPoint(
+                b.left + b.width / 2, b.top + b.height / 2);
+            return {
+                vh: window.innerHeight,
+                sheetBottom: s.bottom,
+                coversFooter: !!hit && sheet.contains(hit),
+            };
+        }"""
+    )
+    assert geo["sheetBottom"] >= geo["vh"] - 2, geo
+    assert geo["coversFooter"], geo

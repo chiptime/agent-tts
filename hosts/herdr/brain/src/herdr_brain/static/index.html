@@ -229,6 +229,14 @@
       visibility: hidden;
       transition: transform 0.28s cubic-bezier(0.2, 0.8, 0.2, 1), visibility 0s 0.28s;
     }
+    /* Conversations (2026-11-22): anchored at the viewport FLOOR like the
+     * calls popup — it covers the call footer (z 20 over z 16) instead of
+     * floating above a reserved strip; the padding only clears the
+     * gesture bar's safe area. */
+    #conv-sheet {
+      bottom: 0;
+      padding-bottom: env(safe-area-inset-bottom, 0px);
+    }
     #conv-sheet.open,
     #pending-sheet.open,
     #new-sheet.open {
