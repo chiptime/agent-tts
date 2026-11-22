@@ -31,7 +31,7 @@ from typing import Callable, Literal, Optional
 from urllib.parse import parse_qs, unquote_plus
 
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Path as PathParam, Query, Request, UploadFile, WebSocket
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -2719,7 +2719,11 @@ def create_app(
             + ".\n\nReport the outcome to the user in one or two short "
             "spoken sentences. Only 'stopped' means the turn was "
             "interrupted; anything else means it was NOT — say that. "
-            "'dialog_open' says the agent was waiting at a dialog, "
+            "'dialog_open' says the agent was waiting at a dialog — tell "
+            "the user there is an open dialog and they must answer it "
+            "first («hay un diálogo abierto; respóndelo primero»; "
+            "\"There's an open dialog; answer it first.\") and never "
+            "offer to interrupt again, "
             "'idle' says there was no running turn at all, and "
             "'unverified'/'unknown' say the stop was not confirmed — "
             "report exactly what the outcome says."
@@ -3663,6 +3667,12 @@ def create_app(
         with its own truthful detail. When the store holds an
         actionable draft receipt for the pane, its masked text hint
         rides along so the stop can report whether that draft survived.
+
+        S3: the dialog-open refusal keeps its zero-keys contract and
+        names its reason explicitly — a stable ``reason:
+        "dialog_open"`` field beside the truthful detail, so the PWA
+        localizes the message instead of interpolating the raw Spanish
+        detail. Every other refusal keeps the plain detail shape.
         """
         drafts = [
             r for r in receipt_store.list(body.pane_id)
@@ -3689,6 +3699,19 @@ def create_app(
                     "No sé interrumpir ese agente con seguridad; usa su "
                     "propio atajo de teclado en la terminal."
                 ),
+            )
+        if outcome == "dialog_open":
+            # S3 «Rechazar explicando»: the refusal stays keyless and
+            # now names its reason with a stable token the PWA can
+            # localize; the truthful detail rides unchanged.
+            return JSONResponse(
+                status_code=502,
+                content={
+                    "detail": (
+                        result.get("detail") or "No se pudo detener el agente."
+                    ),
+                    "reason": "dialog_open",
+                },
             )
         raise HTTPException(
             status_code=502,

@@ -171,6 +171,33 @@ def test_stop_disarms_when_the_window_elapses(karaoke_app):
     assert _posts(harness, "/pane/stop") == []
 
 
+def test_stop_dialog_open_refusal_toasts_the_localized_message(karaoke_app):
+    """S3: a stop refused because the pane waits at a dialog toasts the
+    operator-approved localized message («Hay un diálogo abierto;
+    respóndelo primero.»), driven by the server's stable reason — never
+    the raw Spanish detail interpolated into the generic failure copy."""
+    harness, page = _page(karaoke_app)
+    harness.respond(
+        "/pane/stop",
+        {
+            "detail": "el agente espera en un diálogo; respóndelo con teclas "
+            "desde la terminal, no admite una interrupción segura",
+            "reason": "dialog_open",
+        },
+        method="POST",
+        status=502,
+    )
+    stop = page.locator("#pane-stop")
+
+    stop.click()
+    expect(stop).to_contain_text("Toca otra vez")
+    stop.click()
+
+    expect(page.locator("#toast")).to_contain_text(
+        "Hay un diálogo abierto; respóndelo primero."
+    )
+
+
 def test_steer_is_hidden_and_only_a_long_press_sends_it(karaoke_app):
     body = {"ok": True, "pane_id": "w1:p2", "receipt": EFFECTIVE_RECEIPT}
     harness, page = _page(karaoke_app, body)

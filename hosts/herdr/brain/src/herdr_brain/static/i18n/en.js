@@ -79,6 +79,7 @@
     "receipt.submit": "Send now",
     "stop.fail": "Could not stop: {detail}",
     "stop.fail_offline": "Could not stop: no connection to the brain",
+    "stop.dialog_open": "There's an open dialog; answer it first.",
     "stop.unverified": "This agent has no verified Stop",
 
     /* ---- brain message (S13) ---- */
