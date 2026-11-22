@@ -27,7 +27,7 @@ from fastapi.testclient import TestClient
 
 import herdr_brain.server as server_module
 from herdr_brain.config import Settings
-from herdr_brain.crew.client import CrewHttpResponse
+from herdr_brain.crew.client import CrewHttpResponse, UrllibTransport
 from herdr_brain.crew.roster import CrewRoster
 from herdr_brain.crew_runtime import (
     DEFAULT_CREW_PORT,
@@ -38,6 +38,15 @@ from herdr_brain.crew_runtime import (
 from herdr_brain.server import create_app
 
 from tests.conftest import SETTINGS_KWARGS
+from tests.test_crew_service import (
+    LEAD_DER,
+    PEER_DER,
+    PEER_PEM,
+    SECRET,
+    getter,
+    headers,
+)
+from tests.test_send_receipts import ScriptedMux, _agent, _tools
 
 FIXTURES = Path(__file__).parent / "fixtures" / "crew"
 PEER_PEM = (FIXTURES / "peer.pem").read_text(encoding="utf-8")
@@ -399,9 +408,13 @@ class TestRemoteSteerAndReceipts:
             tmp_path, monkeypatch, crew=make_gateway(state, {"host-b": transport})
         ), state
 
-    def _loopback(self, tmp_path, monkeypatch, tools=None):
+    def _loopback(self, tmp_path, monkeypatch, tools=None, *,
+                  old_owner_reply=False):
         """A lead brain whose host-b transport forwards into a real peer
-        brain's crew dispatcher (both sides share the tools double)."""
+        brain's crew dispatcher (both sides share the tools double).
+        ``old_owner_reply`` swaps the owner's reply handler for the
+        two-argument signature an owner predating the steer field
+        exposes — its dispatcher must refuse the unknown kwarg."""
         tools = tools or CrewTools()
         owner_state = tmp_path / "owner-state"
         roster = CrewRoster.load(owner_state, now=lambda: 1_000.0)
@@ -418,13 +431,21 @@ class TestRemoteSteerAndReceipts:
             owner_state, secret_provider=lambda: "crew-secret-1",
             transport_factory=lambda *a: StubTransport(), now=lambda: 1_000.0,
         ))
-        owner_handlers = owner_app.state.crew_handlers
+        owner_handlers = dict(owner_app.state.crew_handlers)
+        if old_owner_reply:
+            real = owner_handlers["reply"]
+
+            def old_signature_reply(pane_id, text):
+                return real(pane_id, text)
+
+            owner_handlers["reply"] = old_signature_reply
         lead_state = tmp_path / "state"
         write_lead_roster(lead_state)
+        wire = OwnerWire(owner_state, owner_handlers)
         client = make_client(tmp_path, monkeypatch, crew=make_gateway(
-            lead_state, {"host-b": OwnerWire(owner_state, owner_handlers)},
+            lead_state, {"host-b": wire},
         ))
-        return client, tools, lead_state
+        return client, tools, lead_state, wire
 
     def _audit_lines(self, state: Path) -> list:
         path = state / "audit.log"
@@ -435,7 +456,7 @@ class TestRemoteSteerAndReceipts:
     def test_steer_rides_the_wire_into_the_owner_handler(
         self, tmp_path, monkeypatch,
     ):
-        client, tools, _ = self._loopback(tmp_path, monkeypatch)
+        client, tools, _, _ = self._loopback(tmp_path, monkeypatch)
         resp = client.post("/pane/reply", json={
             "pane_id": "host-b:w1:p9", "text": "corta por ahí", "steer": True,
         })
@@ -511,7 +532,7 @@ class TestRemoteSteerAndReceipts:
                 "send a normal reply instead"
             ),
         }
-        client, tools, _ = self._loopback(tmp_path, monkeypatch, tools)
+        client, tools, _, _ = self._loopback(tmp_path, monkeypatch, tools)
 
         resp = client.post("/pane/reply", json={
             "pane_id": "host-b:w1:p9", "text": "corta", "steer": True,
@@ -592,7 +613,7 @@ class TestRemoteSteerAndReceipts:
             "detail": "el texto quedó escrito",
             "text_hint": "«sigue»", "line_hint": "│ sigue",
         }
-        client, tools, _ = self._loopback(tmp_path, monkeypatch, tools)
+        client, tools, _, _ = self._loopback(tmp_path, monkeypatch, tools)
         reply = client.post("/pane/reply", json={
             "pane_id": "host-b:w1:p9", "text": "sigue",
         })
@@ -619,7 +640,7 @@ class TestRemoteSteerAndReceipts:
             "detail": "el texto quedó escrito",
             "text_hint": "«sigue»", "line_hint": "│ sigue",
         }
-        client, tools, _ = self._loopback(tmp_path, monkeypatch, tools)
+        client, tools, _, _ = self._loopback(tmp_path, monkeypatch, tools)
         reply = client.post("/pane/reply", json={
             "pane_id": "host-b:w1:p9", "text": "sigue",
         })
@@ -657,6 +678,267 @@ class TestRemoteSteerAndReceipts:
             "/pane/receipts", params={"pane_id": "host-b:w1:p1"}
         ).json()["receipts"]
         assert listed[0]["outcome"] == "typed_not_submitted"
+
+    # ── the independent verifier's adversarial probes, adopted as
+    # ── regression tests (verifier PASSED 05870f5 8/8)
+
+    def _real_tools_owner(self, mux):
+        """A tools double whose verified reply and draft follow-ups run
+        the REAL BrainTools machinery over a scripted mux — the public
+        interface the owner's pane actually exercises."""
+        owner = CrewTools()
+        real = _tools(mux)
+        owner.verified_reply_to_pane = (
+            lambda pane_id, text, steer=False: real.verified_reply_to_pane(
+                pane_id, text, steer=steer
+            )
+        )
+        owner.submit_typed_text = (
+            lambda pane_id, text_hint, line_hint="": real.submit_typed_text(
+                pane_id, text_hint, line_hint
+            )
+        )
+        owner.discard_typed_text = (
+            lambda pane_id, agent_kind, text_hint,
+            line_hint="": real.discard_typed_text(
+                pane_id, agent_kind, text_hint, line_hint
+            )
+        )
+        return owner
+
+    def test_wire_bytes_carry_steer_only_when_asked(self, monkeypatch):
+        """The REAL transport serializes the body: a plain reply is
+        byte-identical to the pre-S1 wire; steer rides as its own key."""
+        import urllib.request
+
+        class _Response:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+            def read(self):
+                return b"{}"
+
+        seen: list = []
+
+        def fake_urlopen(request, **kwargs):
+            seen.append(request.data)
+            return _Response()
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        transport = UrllibTransport(None)
+        url = "https://example.invalid/crew/v1/pane/p/reply"
+        transport.request("POST", url, headers={}, json_body={"text": "hello"})
+        transport.request(
+            "POST", url, headers={},
+            json_body={"text": "hello", "steer": True},
+        )
+        assert seen[0] == b'{"text": "hello"}'
+        assert seen[1] == b'{"text": "hello", "steer": true}'
+
+    def test_real_owner_unsupported_steer_writes_nothing(
+        self, tmp_path, monkeypatch,
+    ):
+        """A steer aimed at an owner pane whose harness cannot steer:
+        the owner's REAL verified path answers unsupported_steer and
+        not one byte reaches the terminal."""
+        mux = ScriptedMux(
+            [_agent(pane_id="w1:p9", agent="shell", status="working")],
+            ["> existing"],
+        )
+        client, _, _, _ = self._loopback(
+            tmp_path, monkeypatch, self._real_tools_owner(mux)
+        )
+
+        resp = client.post("/pane/reply", json={
+            "pane_id": "host-b:w1:p9", "text": "hola", "steer": True,
+        })
+
+        assert resp.status_code == 422
+        assert resp.json()["detail"] == STEER_REFUSAL
+        assert mux.prompt_calls == []
+        assert mux.key_calls == []
+
+    def test_real_old_owner_handler_refuses_a_steer(
+        self, tmp_path, monkeypatch,
+    ):
+        """An owner whose installed build predates the steer field: its
+        REAL dispatcher refuses the unknown kwarg (400) and the lead
+        answers the canonical refusal — the draft is never sent."""
+        tools = CrewTools()
+        client, tools, _, _ = self._loopback(
+            tmp_path, monkeypatch, tools, old_owner_reply=True
+        )
+
+        resp = client.post("/pane/reply", json={
+            "pane_id": "host-b:w1:p9", "text": "hola", "steer": True,
+        })
+
+        assert resp.status_code == 422
+        assert resp.json()["detail"] == STEER_REFUSAL
+        assert tools.replies == []
+
+    @pytest.mark.parametrize("old_owner_reply", [False, True])
+    def test_ordinary_reply_real_wire_body_both_vintages(
+        self, tmp_path, monkeypatch, old_owner_reply,
+    ):
+        """The plain reply crosses the REAL dispatcher unchanged on both
+        owner vintages: same body, same 200, no receipt invented."""
+        client, tools, _, wire = self._loopback(
+            tmp_path, monkeypatch, CrewTools(), old_owner_reply=old_owner_reply
+        )
+
+        resp = client.post("/pane/reply", json={
+            "pane_id": "host-b:w1:p9", "text": "hello",
+        })
+
+        assert resp.status_code == 200
+        assert [r["body"] for r in wire.requests] == [{"text": "hello"}]
+
+    @pytest.mark.parametrize("action", ["submit", "discard"])
+    def test_crew_followup_respects_the_line_binding(
+        self, tmp_path, monkeypatch, action,
+    ):
+        """The S2 binding survives the crew hop: the owner's REAL
+        follow-up presses NOTHING when the current input line is not the
+        receipt's recorded line, and the receipt resolves unknown."""
+        mux = ScriptedMux(
+            [_agent(pane_id="w1:p9")], ["> a different draft"],
+        )
+        tools = self._real_tools_owner(mux)
+        tools.verified_reply_to_pane = lambda pane_id, text, steer=False: {
+            "outcome": "delivered", "pane_id": pane_id,
+            "receipt": {
+                "outcome": "typed_not_submitted", "text_hint": "original",
+                "line_hint": "> original", "detail": "",
+            },
+        }
+        client, tools, _, _ = self._loopback(tmp_path, monkeypatch, tools)
+        receipt = client.post("/pane/reply", json={
+            "pane_id": "host-b:w1:p9", "text": "original",
+        }).json()["receipt"]
+
+        resp = client.post(f"/pane/receipt/{receipt['id']}/{action}")
+
+        assert mux.key_calls == []
+        assert resp.json()["receipt"]["outcome"] == "unknown"
+
+    def test_crew_receipts_are_isolated_per_pane_and_act_on_their_owner_pane(
+        self, tmp_path, monkeypatch,
+    ):
+        tools = CrewTools()
+        tools.verified_receipt = {
+            "outcome": "typed_not_submitted", "text_hint": "original",
+            "line_hint": "> original", "detail": "",
+        }
+        client, tools, _, _ = self._loopback(tmp_path, monkeypatch, tools)
+
+        a = client.post("/pane/reply", json={
+            "pane_id": "host-b:w1:p9", "text": "original",
+        }).json()["receipt"]
+        # isolation: a foreign pane lists nothing, an unknown id is a 404
+        assert client.get(
+            "/pane/receipts", params={"pane_id": "host-b:w1:p8"}
+        ).json()["receipts"] == []
+        assert client.post(
+            "/pane/receipt/not-a-receipt/submit"
+        ).status_code == 404
+        b = client.post("/pane/reply", json={
+            "pane_id": "host-b:w1:p8", "text": "original",
+        }).json()["receipt"]
+
+        assert a["id"] != b["id"]
+        assert [r["id"] for r in client.get(
+            "/pane/receipts", params={"pane_id": "host-b:w1:p8"}
+        ).json()["receipts"]] == [b["id"]]
+        # submitting a's id keys a's owner pane, not b's
+        resp = client.post(f"/pane/receipt/{a['id']}/submit")
+        assert resp.status_code == 200
+        assert tools.submits == [("w1:p9", "original", "> original")]
+
+    def test_peer_server_error_travels_back(self, tmp_path, monkeypatch):
+        transport = StubTransport(responses={
+            "/reply": (502, {"detail": "owner failure"}),
+        })
+        client, _ = self._lead_client(tmp_path, monkeypatch, transport)
+
+        resp = client.post("/pane/reply", json={
+            "pane_id": "host-b:w1:p9", "text": "hello",
+        })
+
+        assert resp.status_code == 502
+        assert resp.json()["detail"] == "owner failure"
+
+    def test_new_routes_sit_behind_both_wire_factors(self, tmp_path):
+        """The steer and receipt routes are crew routes: every factor
+        combination short of both answers the one uniform 401."""
+        from herdr_brain.crew.service import CrewService
+
+        roster = CrewRoster.load(tmp_path / "state", now=lambda: 1_000.0)
+        roster.init_lead("host-a", SECRET, now=1_000.0)
+        roster.record_peer(
+            "host-b", "https://b.example:8747", PEER_PEM, now=1_000.0
+        )
+        service = CrewService(
+            roster_loader=lambda: roster, now=lambda: 1_000.0,
+            handlers={
+                "reply": lambda **k: {},
+                "receipt_submit": lambda **k: {},
+                "receipt_discard": lambda **k: {},
+            },
+        )
+        paths = [
+            "/crew/v1/pane/p/reply",
+            "/crew/v1/pane/p/receipt/submit",
+            "/crew/v1/pane/p/receipt/discard",
+        ]
+        wrong_factors = [
+            (headers("wrong"), PEER_DER),
+            ({}, PEER_DER),
+            (headers(SECRET), LEAD_DER),
+            (headers(SECRET), None),
+            ({}, None),
+        ]
+        for path in paths:
+            for h, cert in wrong_factors:
+                answer = service.handle(
+                    "POST", path, {}, {"text_hint": "x"}, getter(h), cert
+                )
+                assert answer == (401, {"detail": "unauthorized"})
+
+    @pytest.mark.parametrize("action", ["submit", "discard"])
+    def test_old_owner_followup_answers_502_and_leaves_the_receipt_untouched(
+        self, tmp_path, monkeypatch, action,
+    ):
+        transport = StubTransport(responses={
+            "/reply": (200, {"ok": False, "receipt": {
+                "outcome": "typed_not_submitted", "text_hint": "original",
+                "line_hint": "> original",
+            }}),
+        })
+        client, _ = self._lead_client(tmp_path, monkeypatch, transport)
+        receipt = client.post("/pane/reply", json={
+            "pane_id": "host-b:w1:p9", "text": "original",
+        }).json()["receipt"]
+        before = client.get(
+            "/pane/receipts", params={"pane_id": "host-b:w1:p9"}
+        ).json()
+
+        resp = client.post(f"/pane/receipt/{receipt['id']}/{action}")
+        after = client.get(
+            "/pane/receipts", params={"pane_id": "host-b:w1:p9"}
+        ).json()
+
+        assert resp.status_code == 502
+        assert resp.json() == {"detail": (
+            "el peer del crew no admite completar este borrador; "
+            "termínalo desde su terminal."
+        )}
+        assert before == after
 
 
 # ── lead: remote gates ──────────────────────────────────────────────────────
