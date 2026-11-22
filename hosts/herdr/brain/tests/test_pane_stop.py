@@ -288,3 +288,99 @@ def test_the_stop_replay_names_every_outcome_truthfully(tmp_path, monkeypatch):
     assert "Only 'stopped' means the turn was interrupted" in report
     assert "dialog_open" in report
     assert "idle" in report
+
+
+# ── S3: the dialog-open refusal speaks an explicit reason ────────────────────
+
+
+def test_stop_dialog_open_refusal_names_a_stable_reason(tmp_path, monkeypatch):
+    """S3 «Rechazar explicando»: the dialog refusal keeps its zero-keys
+    contract AND now carries an explicit, stable ``reason`` the PWA can
+    localize — no more raw Spanish detail interpolated into any locale's
+    toast. The truthful detail string stays for humans and logs."""
+    FakeStopTools.stop_outcome = {
+        "outcome": "dialog_open", "keys": [], "detail": "la razón humana",
+    }
+    client = _stop_client(tmp_path, monkeypatch)
+    state_dir = tmp_path / "state"
+    store = pairing.PairingStore(state_dir)
+    minted = store.mint()
+    _, outcome = store.claim(minted["code"], "phone")
+    headers = {"Authorization": f"Bearer {outcome['token']}"}
+
+    resp = client.post("/pane/stop", json={"pane_id": "w1:p2"}, headers=headers)
+
+    assert resp.status_code == 502
+    body = resp.json()
+    assert body["reason"] == "dialog_open"
+    assert "la razón humana" in body["detail"]
+    # Zero keys, on the wire and in the audit row (S3: cero riesgo).
+    audit_file = state_dir / "audit.log"
+    stop_rows = [
+        json.loads(line) for line in audit_file.read_text().splitlines()
+        if json.loads(line)["action"] == "pane.stop"
+    ]
+    assert stop_rows and stop_rows[-1]["detail"]["keys"] == []
+
+
+@pytest.mark.parametrize("stop_outcome", ["idle", "unverified", "unknown"])
+def test_other_stop_refusals_keep_the_plain_detail_contract(
+    tmp_path, monkeypatch, stop_outcome
+):
+    """S3 pin: only the dialog refusal gains the stable ``reason`` —
+    every other refusal keeps today's shape (plain string detail, no
+    reason field), so existing consumers are untouched."""
+    FakeStopTools.stop_outcome = {
+        "outcome": stop_outcome, "keys": [], "detail": "la razón",
+    }
+    client = _stop_client(tmp_path, monkeypatch)
+    store = pairing.PairingStore(tmp_path / "state")
+    minted = store.mint()
+    _, outcome = store.claim(minted["code"], "phone")
+    headers = {"Authorization": f"Bearer {outcome['token']}"}
+
+    resp = client.post("/pane/stop", json={"pane_id": "w1:p2"}, headers=headers)
+
+    assert resp.status_code == 502
+    body = resp.json()
+    assert "reason" not in body
+    assert body["detail"] == "la razón"
+
+
+def test_the_stop_replay_hands_the_dialog_reason_to_the_speaker(
+    tmp_path, monkeypatch
+):
+    """S3 (voice): when the approved interrupt hits an open dialog the
+    replay must hand the model the explicit spoken reason — «hay un
+    diálogo abierto; respóndelo primero» — so the answer says WHAT to
+    do, not just that the stop failed."""
+    from tests.test_server import FakeLLM
+
+    FakeStopTools.stop_outcome = {
+        "outcome": "dialog_open", "keys": [], "detail": "espera en un diálogo",
+    }
+    FakeStopTools.stops = []
+    monkeypatch.setattr(server_module, "BrainTools", FakeStopTools)
+    cfg = Settings(**{
+        **SETTINGS_KWARGS,
+        "audio_dir": str(tmp_path / "audio"),
+        "state_dir": str(tmp_path / "state"),
+    })
+    llm = FakeLLM(result={
+        "answer": "Hay un diálogo abierto; respóndelo primero.",
+        "pane_id": "w1:p2", "agent": "claude", "session_id": "default",
+    })
+    app = server_module.create_app(settings=cfg, llm_factory=lambda c, t: llm)
+    client = TestClient(app, base_url=LOOPBACK)
+    gate = app.state.approval_store.propose(
+        "default", text="", pane_id="w1:p2", agent="claude", tool=STOP_AGENT
+    )
+    resp = client.post(f"/approval/{gate.gate_id}/approve")
+    assert resp.status_code == 200
+    assert FakeStopTools.stops == ["w1:p2"]
+    report = llm.calls[0]
+    assert "dialog_open" in report
+    assert "espera en un diálogo" in report
+    # The explicit operator-approved guidance the model can speak.
+    assert "respóndelo primero" in report
+    assert "answer it first" in report

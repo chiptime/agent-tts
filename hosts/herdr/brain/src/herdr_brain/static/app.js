@@ -2847,6 +2847,22 @@
     sendReceiptFollowup(receiptDiscardBtn, "discard");
   });
 
+  /* S3: which toast a failed stop produces — pure, node-testable. A
+   * refusal carrying the server's stable dialog_open reason rides its
+   * own localized key; every other failure keeps the legacy generic
+   * copy with the string detail (or "error N"). */
+  /* @stop-pure-start */
+  function stopFailureToast(body, status) {
+    if (body && body.reason === "dialog_open") {
+      return { key: "stop.dialog_open", params: {} };
+    }
+    var detail = body && typeof body.detail === "string"
+      ? body.detail
+      : "error " + status;
+    return { key: "stop.fail", params: { detail: detail } };
+  }
+  /* @stop-pure-end */
+
   /* Stop (S12): double-tap arming. The first tap arms the button for
    * ~3 s (it says so and turns the armed color); only a second tap
    * inside the window sends POST /pane/stop. */
@@ -2890,10 +2906,11 @@
             return null;
           }
           return resp.json().then(
-            function (body) { return body && body.detail; },
+            function (body) { return body || null; },
             function () { return null; }
-          ).then(function (detail) {
-            showToast(t("stop.fail", { detail: typeof detail === "string" ? detail : "error " + resp.status }), 6000);
+          ).then(function (body) {
+            var toast = stopFailureToast(body, resp.status);
+            showToast(t(toast.key, toast.params), 6000);
           });
         })
         .catch(function () {
