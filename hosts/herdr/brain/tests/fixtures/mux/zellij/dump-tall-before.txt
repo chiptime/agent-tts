@@ -1,8 +1,6 @@
-$ zellij --layout welcome
-Welcome to your workspace.
-status: ok
-$
-
-
-
-
+probes: 01 ok
+probes: 02 ok
+probes: 03 ok
+probes: 04 ok
+probes: 05 ok
+sh-5.3$

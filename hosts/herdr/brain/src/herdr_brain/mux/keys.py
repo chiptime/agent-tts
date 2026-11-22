@@ -135,6 +135,48 @@ _TMUX_NAMES = {
 _TMUX_MODIFIERS = {"ctrl": "C", "shift": "S", "alt": "M", "meta": "M"}
 
 
+#: Neutral → zellij send-keys spellings (probed LIVE on zellij 0.45.1,
+#: parity wave 2 S6): named keys are capitalized and chords are
+#: SPACE-separated — ``Ctrl u``, never ``Ctrl+u`` (the plus spelling
+#: exits 2 with ``Invalid key``).
+_ZELLIJ_NAMES = {
+    "enter": "Enter",
+    "esc": "Esc",
+    "tab": "Tab",
+    "up": "Up",
+    "down": "Down",
+    "left": "Left",
+    "right": "Right",
+}
+
+_ZELLIJ_MODIFIERS = {"ctrl": "Ctrl"}
+
+
+def zellij_key(neutral: str) -> str:
+    """Translates one canonical key to zellij's send-keys spelling.
+
+    Only spellings with a LIVE-verified 0.45.1 equivalent translate:
+    the named keys above, single literal characters, and single-``ctrl``
+    chords over one alphabetic key. Everything else raises
+    :class:`ValueError` rather than approximating — the dialog
+    allowlist never asks for more.
+    """
+    if neutral in _ZELLIJ_NAMES:
+        return _ZELLIJ_NAMES[neutral]
+    if _SINGLE.match(neutral):
+        return neutral  # a literal character types itself
+    parts = neutral.split("+")
+    base, mods = parts[-1], parts[:-1]
+    if (
+        len(mods) == 1
+        and base.isalpha()
+        and _SINGLE.match(base)
+        and mods[0] in _ZELLIJ_MODIFIERS
+    ):
+        return f"{_ZELLIJ_MODIFIERS[mods[0]]} {base}"
+    raise ValueError(f"no zellij spelling for key: {neutral!r}")
+
+
 def tmux_key(neutral: str) -> str:
     """Translates one canonical key to tmux's key-table spelling.
 

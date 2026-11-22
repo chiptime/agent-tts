@@ -10,7 +10,9 @@ Reads ride ``capture-pane`` (styled with ``-e``, history with
 ``-S -<n>``); writes deliver text through a PRIVATE paste buffer — the
 exact bytes travel by stdin (``load-buffer <name> -``), are pasted
 byte-exact into the target pane (``paste-buffer -d -S``) and the buffer
-is deleted, with ``send-keys`` reduced to the ``Enter`` key. No shell
+is deleted, with ``send-keys`` reduced to the ``Enter`` key — and
+(parity wave 2 S5) bare typing with NO submit at all (``send_text``):
+the same private-buffer pipeline with nothing after the paste. No shell
 ever sits between the brain and the pane, and the text never rides argv:
 tmux 3.8 drops a trailing ``;`` from ``send-keys -l`` while still
 exiting 0 (live probe in ``tests/test_mux_tmux_live.py``), so argv is
@@ -67,7 +69,11 @@ _EVIDENCE = {
 def _exit_reason(detail: str) -> str:
     """Maps a tmux failure text onto the refusal vocabulary."""
     text = detail.lower()
-    if "no server running" in text or "error connecting" in text:
+    if (
+        "no server running" in text
+        or "error connecting" in text
+        or text == "server exited unexpectedly"
+    ):
         return "unreachable"
     if "can't find pane" in text or "can't find window" in text:
         return "gone"
@@ -85,6 +91,12 @@ class TmuxAdapter:
         "#{pane_id}\t#{session_name}\t#{window_id}\t#{pane_current_path}"
         "\t#{pane_title}\t#{pane_active}\t#{window_active}\t#{session_attached}"
     )
+
+    #: ``tmux list-clients -F``: session name and the client's control
+    #: mode, one line per attached client. ``session_attached`` counts
+    #: control clients too, so this cross-check decides who is REALLY
+    #: watching a session.
+    LIST_CLIENTS_FORMAT = "#{session_name}|#{client_control_mode}"
 
     def __init__(
         self,
@@ -106,8 +118,8 @@ class TmuxAdapter:
             evidence=_EVIDENCE,
             facts={
                 # No watcher is armed in this port: every listing is a
-                # fresh list-panes call, so topology is at most one call
-                # (~1s) stale.
+                # fresh list-panes + list-clients pair, so topology is
+                # at most two calls (~1s) stale.
                 "topology_latency": "bounded:1000",
                 "spaces": "many",  # one grid per tmux session
             },
@@ -185,20 +197,22 @@ class TmuxAdapter:
     #: sends in one server collision-free.
     PASTE_BUFFER_PREFIX = "herdr-paste-"
 
-    def _submit_line(self, pane_id: str, text: str, capability: str) -> None:
-        """Delivers one literal line via a private paste buffer, then Enter.
+    def _paste_text(
+        self, pane_id: str, text: str, capability: str, *, submit: bool
+    ) -> None:
+        """Delivers one literal line via a private buffer, optionally with Enter.
 
         Finding C (live, tmux 3.8 isolated probe): ``send-keys -l``
         silently dropped a trailing ``;`` while still exiting 0, and the
         receipt even read ``sent`` on the altered write. The exact bytes
         therefore never ride argv — argv is a surface tmux 3.8 can alter;
-        stdin is not.         ``load-buffer`` pulls the text from stdin into a PRIVATE uniquely
+        stdin is not. ``load-buffer`` pulls the text from stdin into a PRIVATE uniquely
         named buffer (never a default ``0``..``9`` buffer, never a foreign
         name), ``paste-buffer -d -S`` inserts it byte-exact into the
         TARGET pane by id (``-S`` keeps tmux from vis-escaping control
         characters, matching the raw bytes ``send-keys -l`` used to
         deliver) and ``-d`` deletes the buffer in the same operation, and
-        the submit rides the SAME client invocation as tmux's ``;``
+        any submit rides the SAME client invocation with tmux's ``;``
         separator — the payload text only ever rides stdin, and one
         invocation narrows the window in which another client's command
         could run between the paste and the Enter. A best-effort
@@ -208,16 +222,15 @@ class TmuxAdapter:
         Only buffers this operation created are ever touched.
         """
         buffer_name = f"{self.PASTE_BUFFER_PREFIX}{uuid.uuid4().hex}"
+        paste = ["paste-buffer", "-d", "-S", "-b", buffer_name, "-t", pane_id]
+        if submit:
+            paste.extend([";", "send-keys", "-t", pane_id, "Enter"])
         try:
             self._run_cli(
                 ["load-buffer", "-b", buffer_name, "-"], capability,
                 input_text=text,
             )
-            self._run_cli(
-                ["paste-buffer", "-d", "-S", "-b", buffer_name, "-t", pane_id,
-                 ";", "send-keys", "-t", pane_id, "Enter"],
-                capability,
-            )
+            self._run_cli(paste, capability)
         finally:
             self._delete_paste_buffer(buffer_name, capability)
 
@@ -279,18 +292,45 @@ class TmuxAdapter:
 
     # -- reads ----------------------------------------------------------------
 
+    def _interactive_client_sessions(self) -> set:
+        """Sessions with at least one attached NON-control client.
+
+        Finding (live, tmux 3.8): control clients (``tmux -C``) count
+        into ``#{session_attached}`` — with one attached, a session
+        driven purely by a program looked "on screen" with no human
+        watching. ``session_control_clients`` does not exist as a
+        session-level format in tmux 3.8 (rendered empty while a
+        control client was attached), but the per-client
+        ``#{client_control_mode}`` does: only an explicit ``1`` marks a
+        control client, an empty or ``0`` mode is a real client.
+        """
+        proc = self._run_cli(
+            ["list-clients", "-F", self.LIST_CLIENTS_FORMAT], "pane_grid"
+        )
+        sessions = set()
+        for line in proc.stdout.splitlines():
+            fields = line.split("|")
+            if not fields or not fields[0]:
+                continue
+            if len(fields) < 2 or fields[1].strip() != "1":
+                sessions.add(fields[0])
+        return sessions
+
     def list_agents(self) -> List[AgentInfo]:
         proc = self._run_cli(["list-panes", "-a", "-F", self.LIST_FORMAT], "pane_grid")
+        interactive = self._interactive_client_sessions()
         agents: List[AgentInfo] = []
         for line in proc.stdout.splitlines():
             fields = line.split("\t")
             if len(fields) < 8:
                 continue
-            pane_id, _session, _window, cwd, title, pane_active, window_active, attached = (
+            pane_id, session, _window, cwd, title, pane_active, window_active, _attached = (
                 fields[:8]
             )
             focused = (
-                pane_active == "1" and window_active == "1" and attached not in ("", "0")
+                pane_active == "1"
+                and window_active == "1"
+                and session in interactive
             )
             agents.append(
                 AgentInfo(
@@ -356,7 +396,7 @@ class TmuxAdapter:
         clean = (command or "").strip()
         if not clean:
             raise HerdrError("refusing to run an empty command")
-        self._submit_line(pane_id, clean, "keys")
+        self._paste_text(pane_id, clean, "keys", submit=True)
 
     def send_prompt(self, pane_id: str, text: str, timeout_ms: Optional[int] = None) -> dict:
         clean = sanitize_prompt_text(text)
@@ -369,18 +409,28 @@ class TmuxAdapter:
         # screen stays honestly `unknown` instead of upgrading to
         # `sent`, and `effective` is never claimed.
         before = self._verified_read(pane_id)
-        self._submit_line(pane_id, clean, "prompt_submit")
+        self._paste_text(pane_id, clean, "prompt_submit", submit=True)
         afters = self._verified_poll_reads(pane_id, before, clean)
         outcome, detail = classify_send(before, afters, clean, "unknown")
         return {"ok": outcome in ("effective", "sent"), "status": outcome, "output": detail}
 
     def send_text(self, pane_id: str, text: str) -> None:
-        raise MuxRefusal(
-            "unsupported", "send_text",
-            "bare text typing is herdr's pinned pane send-text surface; "
-            "tmux's verified writes always submit, so typing without "
-            "Enter is refused rather than approximated",
-        )
+        """Types literal text WITHOUT Enter (parity wave 2 S5).
+
+        The operator opened this surface deliberately: tmux's
+        ``paste-buffer`` can deliver text with no submit, so refusing it
+        was refusing something tmux verifiably does. It rides the SAME
+        exact path the verified submit rides (private buffer, text on
+        stdin, never argv — the T7 fix), minus the Enter: typing only.
+        Sanitized to ONE line exactly like herdr's ``send_text`` (a
+        literal newline would submit the field early), empty refused
+        before any spawn, and a CLI failure raises — the dialog recipe
+        re-reads the screen itself, so no receipt is fabricated here.
+        """
+        clean = sanitize_prompt_text(text)
+        if not clean:
+            raise HerdrError("refusing to send empty text")
+        self._paste_text(pane_id, clean, "send_text", submit=False)
 
     def create_tab(self, label: str, cwd: Optional[str] = None) -> dict:
         # Finding (live, tmux 3.8 isolated probe): ``new-window`` without

@@ -1,9 +1,8 @@
-$ zellij --layout welcome
-Welcome to your workspace.
-status: ok
-$ run the probes
-probes ok: 3 passed
-$
-
-
-
+probes: 01 ok
+probes: 02 ok
+probes: 03 ok
+probes: 04 ok
+probes: 05 ok
+sh-5.3$ run the probes
+run the probes
+sh-5.3$

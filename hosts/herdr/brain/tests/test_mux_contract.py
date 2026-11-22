@@ -244,24 +244,50 @@ def _no_spawn_runner():
 class TestSendTextSurface:
     """Literal typing WITHOUT Enter is herdr's pinned dialog surface.
 
-    The free-text and search-first picker recipes ride it; tmux and
-    zellij have no verified shape for it in this port, so both refuse
-    with the same honest ``unsupported`` before spawning anything.
+    The free-text and search-first picker recipes ride it. parity wave 2
+    S5 (operator choice «Admitir») opened it on tmux over the exact
+    private-buffer path; the lead extended it to zellij (fleet
+    parity-w2) over ``write-chars`` without the Enter ride. Both type
+    and never submit.
     """
 
-    @pytest.mark.parametrize(
-        "factory",
-        [
-            lambda: TmuxAdapter(bin_path="tmux-test", runner=_no_spawn_runner()),
-            lambda: ZellijAdapter(bin_path="zellij-test", runner=_no_spawn_runner()),
-        ],
-        ids=["tmux", "zellij"],
-    )
-    def test_send_text_refuses_unsupported_without_spawning(self, factory):
-        with pytest.raises(MuxRefusal) as excinfo:
-            factory().send_text("w1:p9", "hi")
-        assert excinfo.value.reason == "unsupported"
-        assert excinfo.value.capability == "send_text"
+    def test_tmux_types_over_the_exact_path_without_enter(self):
+        calls: list = []
+
+        def run(cmd, **kwargs):
+            calls.append(list(cmd))
+            import subprocess
+
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        TmuxAdapter(bin_path="tmux-test", runner=run).send_text("w1:p9", "hi;")
+        load, paste, delete = calls
+        buffer_name = load[3]
+        # The exact bytes ride stdin (checked by the adapter unit suite);
+        # here the port contract: the payload never rides argv, and the
+        # paste invocation carries NO submit tail.
+        assert load == ["tmux-test", "load-buffer", "-b", buffer_name, "-"]
+        assert paste == [
+            "tmux-test", "paste-buffer", "-d", "-S", "-b", buffer_name,
+            "-t", "w1:p9",
+        ]
+        assert delete == ["tmux-test", "delete-buffer", "-b", buffer_name]
+        assert not any("hi;" in " ".join(c) for c in calls)
+
+    def test_zellij_types_one_literal_element_without_enter(self):
+        calls: list = []
+
+        def run(cmd, **kwargs):
+            calls.append(list(cmd))
+            import subprocess
+
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        ZellijAdapter(bin_path="zellij-test", runner=run).send_text("w1:p9", "hi;")
+        # ONE call: the exact bytes as ONE argv element, NO submit ride.
+        assert calls == [
+            ["zellij-test", "action", "write-chars", "--pane-id", "w1:p9", "hi;"]
+        ]
 
 
 def _tmux() -> TmuxAdapter:

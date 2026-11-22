@@ -135,14 +135,18 @@ class TestProbe:
         # parent): --version is the version source only — reachability
         # needs one session-state roundtrip on the adapter's own verb.
         runner = InlineRunner(
-            (0, "zellij 0.44.2\n", ""),
+            (0, "zellij 0.45.1\n", ""),
             (0, "[]\n", ""),
         )
         probe = probe_mux(ZellijAdapter(bin_path="zellij-test", runner=runner))
         assert probe.reachable is True
-        assert probe.version == "0.44.2"
+        assert probe.version == "0.45.1"
         assert runner.calls[0]["cmd"] == ["zellij-test", "--version"]
-        assert runner.calls[1]["cmd"] == ["zellij-test", "list-panes", "--all", "--json"]
+        # The real 0.45.1 verb lives under `action` (the top-level
+        # list-panes does not exist).
+        assert runner.calls[1]["cmd"] == [
+            "zellij-test", "action", "list-panes", "--all", "--json"
+        ]
 
     def test_probe_herdr_via_help(self, settings):
         runner = InlineRunner((0, "usage: herdr ...\n", ""))
@@ -257,7 +261,7 @@ class TestCompositeSelection:
         runner = InlineRunner(
             (0, "tmux 3.6b\n", ""),
             (0, "scratch: 1 windows (created Tue Nov 18 10:00:00 2026)\n", ""),
-            (0, "zellij 0.44.2\n", ""),
+            (0, "zellij 0.45.1\n", ""),
             (0, "[]\n", ""),
         )
         mux = create_mux(
@@ -272,7 +276,8 @@ class TestCompositeSelection:
         assert runner.calls[0]["cmd"][:2] == ["/opt/tmux", "-V"]
         assert runner.calls[1]["cmd"][:2] == ["/opt/tmux", "list-sessions"]
         assert runner.calls[2]["cmd"][:2] == ["/opt/zellij", "--version"]
-        assert runner.calls[3]["cmd"][:2] == ["/opt/zellij", "list-panes"]
+        assert runner.calls[3]["cmd"][:2] == ["/opt/zellij", "action"]
+        assert runner.calls[3]["cmd"][2:4] == ["list-panes", "--all"]
 
 
 class TestCompositeListingIntegration:
@@ -283,6 +288,9 @@ class TestCompositeListingIntegration:
         runner = InlineRunner(
             (0, HERDR_LIST_JSON, ""),
             (0, TMUX_GRID, ""),
+            # tmux's listing cross-checks real clients (a control client
+            # never grounds focus); the session has one here.
+            (0, "main|0\n", ""),
             (0, ZELLIJ_JSON, ""),
         )
         return create_mux(

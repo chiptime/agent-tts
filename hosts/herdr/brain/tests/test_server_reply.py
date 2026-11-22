@@ -495,16 +495,14 @@ def zellij_client(settings, tmp_path, monkeypatch):
     """Composite herd (herdr + zellij) with the REAL zellij adapter
     behind a recorded runner. CLI order of one verified reply to pane
     ``zellij:1``: list → dump (tools' before read) → dump (adapter's
-    before read) → write-chars → write 10 → dump (adapter's re-read,
-    early stop: body moved) → dump (tools' poll read, early stop)."""
+    before read) → write-chars → write 10 → two adapter reads and three
+    tools reads (cat's output repeats the input on its last nonblank row)."""
     runner = RecordedRunner(
-        (("list-panes",), 0, _fixture("zellij/list-panes.json"), ""),
-        (("action", "dump-screen"), 0, _fixture("zellij/dump-screen.txt"), ""),
-        (("action", "dump-screen"), 0, _fixture("zellij/dump-screen.txt"), ""),
+        (("action", "list-panes"), 0, _fixture("zellij/list-panes.json"), ""),
+        *((('action', 'dump-screen'), 0, _fixture("zellij/dump-empty.txt"), ""),) * 2,
         (("action", "write-chars"), 0, "", ""),
         (("action", "write"), 0, "", ""),
-        (("action", "dump-screen"), 0, _fixture("zellij/dump-prompt-after-sent.txt"), ""),
-        (("action", "dump-screen"), 0, _fixture("zellij/dump-prompt-after-sent.txt"), ""),
+        *((('action', 'dump-screen'), 0, _fixture("zellij/dump-prompt-after-sent.txt"), ""),) * 5,
     )
     client = _mux_client(
         monkeypatch, settings, tmp_path, "zellij",
@@ -521,6 +519,7 @@ def tmux_client(settings, tmp_path, monkeypatch):
     rides stdin; argv only ever carries the uuid buffer name)."""
     runner = RecordedRunner(
         (("list-panes",), 0, _fixture("tmux/list-panes.txt"), ""),
+        (("list-clients",), 0, "main|0\n", ""),
         (("capture-pane",), 0, _fixture("tmux/capture-visible.txt"), ""),
         (("capture-pane",), 0, _fixture("tmux/capture-visible.txt"), ""),
         (("load-buffer",), 0, "", ""),
@@ -590,9 +589,9 @@ class TestMultiplexerReplyParity:
         # re-read, so the receipt stays re-offerable exactly like a
         # herdr draft (200 + ok:false + Submit/Discard follow-ups).
         runner = RecordedRunner(
-            (("list-panes",), 0, _fixture("zellij/list-panes.json"), ""),
-            (("action", "dump-screen"), 0, _fixture("zellij/dump-screen.txt"), ""),
-            (("action", "dump-screen"), 0, _fixture("zellij/dump-screen.txt"), ""),
+            (("action", "list-panes"), 0, _fixture("zellij/list-panes.json"), ""),
+            (("action", "dump-screen"), 0, _fixture("zellij/dump-empty.txt"), ""),
+            (("action", "dump-screen"), 0, _fixture("zellij/dump-empty.txt"), ""),
             (("action", "write-chars"), 0, "", ""),
             (("action", "write"), 0, "", ""),
             (("action", "dump-screen"), 0, _fixture("zellij/dump-prompt-after-typed.txt"), ""),
@@ -649,6 +648,7 @@ class TestMultiplexerReplyParity:
         # the paste-and-Enter invocation is the only write attempted.
         runner = RecordedRunner(
             (("list-panes",), 0, _fixture("tmux/list-panes.txt"), ""),
+            (("list-clients",), 0, "main|0\n", ""),
             (("capture-pane",), 0, _fixture("tmux/capture-visible.txt"), ""),
             (("capture-pane",), 0, _fixture("tmux/capture-visible.txt"), ""),
             (("load-buffer",), 0, "", ""),
@@ -670,7 +670,7 @@ class TestMultiplexerReplyParity:
         assert [r["outcome"] for r in listed["receipts"]] == ["refused"]
         # The paste-and-Enter invocation was the only write attempted.
         assert [c["cmd"][1] for c in runner.calls] == [
-            "list-panes", "capture-pane", "capture-pane",
+            "list-panes", "list-clients", "capture-pane", "capture-pane",
             "load-buffer", "paste-buffer", "delete-buffer",
         ]
 
@@ -700,7 +700,7 @@ class TestMultiplexerReplyParity:
         # pane: 404 with the store detail — a reply is never rerouted
         # to another pane.
         runner = RecordedRunner(
-            (("list-panes",), 0, _fixture("zellij/list-panes.json"), ""),
+            (("action", "list-panes"), 0, _fixture("zellij/list-panes.json"), ""),
         )
         client = _mux_client(
             monkeypatch, settings, tmp_path, "zellij",
@@ -721,14 +721,11 @@ class TestMultiplexerReplyParity:
         # audit omits None attribution fields — device appears when a
         # paired device made the request, never for one pane kind only).
         runner = RecordedRunner(
-            (("list-panes",), 0, _fixture("zellij/list-panes.json"), ""),  # herdr reply listing
-            (("list-panes",), 0, _fixture("zellij/list-panes.json"), ""),  # zellij reply listing
-            (("action", "dump-screen"), 0, _fixture("zellij/dump-screen.txt"), ""),
-            (("action", "dump-screen"), 0, _fixture("zellij/dump-screen.txt"), ""),
+            *((('action', 'list-panes'), 0, _fixture("zellij/list-panes.json"), ""),) * 2,
+            *((('action', 'dump-screen'), 0, _fixture("zellij/dump-empty.txt"), ""),) * 2,
             (("action", "write-chars"), 0, "", ""),
             (("action", "write"), 0, "", ""),
-            (("action", "dump-screen"), 0, _fixture("zellij/dump-prompt-after-sent.txt"), ""),
-            (("action", "dump-screen"), 0, _fixture("zellij/dump-prompt-after-sent.txt"), ""),
+            *((('action', 'dump-screen'), 0, _fixture("zellij/dump-prompt-after-sent.txt"), ""),) * 5,
         )
         client = _mux_client(
             monkeypatch, settings, tmp_path, "zellij",

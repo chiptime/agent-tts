@@ -59,7 +59,8 @@ def adapter(runner: RecordedRunner, **kwargs) -> TmuxAdapter:
 class TestListAgents:
     def test_parses_recorded_grid(self):
         runner = RecordedRunner(
-            (("list-panes",), 0, fixture("tmux/list-panes.txt"), "")
+            (("list-panes",), 0, fixture("tmux/list-panes.txt"), ""),
+            (("list-clients",), 0, "main|0\n", ""),
         )
         agents = adapter(runner).list_agents()
         assert agents == [
@@ -75,7 +76,8 @@ class TestListAgents:
 
     def test_pins_exact_command_and_format_string(self):
         runner = RecordedRunner(
-            (("list-panes",), 0, fixture("tmux/list-panes.txt"), "")
+            (("list-panes",), 0, fixture("tmux/list-panes.txt"), ""),
+            (("list-clients",), 0, "main|0\n", ""),
         )
         adapter(runner).list_agents()
         assert runner.calls[0]["cmd"] == [
@@ -83,19 +85,71 @@ class TestListAgents:
         ]
         assert "#{pane_id}" in TmuxAdapter.LIST_FORMAT
         assert "#{session_attached}" in TmuxAdapter.LIST_FORMAT
+        # The client cross-check is its own pinned call: control mode per
+        # session decides who is really watching.
+        assert runner.calls[1]["cmd"] == [
+            "tmux-test", "list-clients", "-F", TmuxAdapter.LIST_CLIENTS_FORMAT,
+        ]
+        assert "#{client_control_mode}" in TmuxAdapter.LIST_CLIENTS_FORMAT
 
     def test_active_agent_picks_the_focused_pane(self):
         runner = RecordedRunner(
-            (("list-panes",), 0, fixture("tmux/list-panes.txt"), "")
+            (("list-panes",), 0, fixture("tmux/list-panes.txt"), ""),
+            (("list-clients",), 0, "main|0\n", ""),
         )
         active = adapter(runner).active_agent()
         assert active is not None and active.pane_id == "%3"
 
     def test_skips_malformed_lines(self):
         raw = "%3\tmain\t@1\t/repo\tt\t1\t1\t1\nnoise without tabs\n"
-        runner = RecordedRunner((("list-panes",), 0, raw, ""))
+        runner = RecordedRunner(
+            (("list-panes",), 0, raw, ""),
+            (("list-clients",), 0, "main|0\n", ""),
+        )
         agents = adapter(runner).list_agents()
         assert [a.pane_id for a in agents] == ["%3"]
+
+    def test_control_clients_never_ground_focus(self):
+        # Finding (live, tmux 3.8): a control client (``tmux -C``) counts
+        # into ``#{session_attached}`` — with one attached, ``main``'s
+        # pane looked "on screen" with no human watching. Only a
+        # non-control client grounds focus.
+        runner = RecordedRunner(
+            (("list-panes",), 0, fixture("tmux/list-panes.txt"), ""),
+            (("list-clients",), 0, "main|1\n", ""),
+        )
+        agents = adapter(runner).list_agents()
+        assert all(agent.focused is False for agent in agents)
+
+    def test_no_clients_at_all_never_grounds_focus(self):
+        runner = RecordedRunner(
+            (("list-panes",), 0, fixture("tmux/list-panes.txt"), ""),
+            (("list-clients",), 0, "", ""),
+        )
+        agents = adapter(runner).list_agents()
+        assert all(agent.focused is False for agent in agents)
+
+    def test_an_empty_control_mode_is_a_real_client(self):
+        # ``client_control_mode`` renders empty for regular clients on
+        # some tmux builds; only an explicit ``1`` is a control client.
+        runner = RecordedRunner(
+            (("list-panes",), 0, fixture("tmux/list-panes.txt"), ""),
+            (("list-clients",), 0, "main|\n", ""),
+        )
+        agents = adapter(runner).list_agents()
+        assert [a.focused for a in agents] == [True, False, False]
+
+    def test_client_listing_failure_propagates_unreachable(self):
+        # The server died between the two calls: refusing beats a silent
+        # all-unfocused lie — the reason stays retry-worthy.
+        runner = RecordedRunner(
+            (("list-panes",), 0, fixture("tmux/list-panes.txt"), ""),
+            (("list-clients",), 1, "",
+             "no server running on /tmp/tmux-1000/default"),
+        )
+        with pytest.raises(MuxRefusal) as excinfo:
+            adapter(runner).list_agents()
+        assert excinfo.value.reason == "unreachable"
 
 
 class TestReadScreen:
@@ -429,6 +483,77 @@ class TestSendPrompt:
         assert result["ok"] is True
 
 
+class TestSendText:
+    """parity wave 2 S5 (operator choice «Admitir»): bare text typing is
+    enabled over the T7 exact path — the exact bytes ride a PRIVATE paste
+    buffer by stdin (never argv, so tmux 3.8 cannot swallow a trailing
+    ``;``), and NO Enter is pressed: typing only, the caller commits.
+
+    The contract mirrors herdr's ``send_text`` (the specification the
+    other adapters are measured against): sanitized to ONE line, empty
+    refused before any spawn, and a CLI failure raises instead of
+    returning a receipt — the dialog recipe re-reads the screen itself.
+    """
+
+    def test_types_exact_bytes_without_enter(self):
+        payload = "draft $answer \"with quotes\" `and backticks`;"
+        runner = RecordedRunner(
+            (("load-buffer",), 0, "", ""),
+            (("paste-buffer",), 0, "", ""),
+            (("delete-buffer",), 0, "", ""),
+        )
+        adapter(runner).send_text("%3", payload)
+        load, paste, delete = runner.calls
+        name = load["cmd"][3]
+        assert name.startswith("herdr-paste-")
+        # The exact bytes — trailing `;` included — ride stdin, not argv.
+        assert load["cmd"] == ["tmux-test", "load-buffer", "-b", name, "-"]
+        assert load["input"] == payload
+        # Typing only: the paste invocation carries NO submit tail.
+        assert paste["cmd"] == [
+            "tmux-test", "paste-buffer", "-d", "-S", "-b", name, "-t", "%3",
+        ]
+        # The private buffer is cleaned up afterwards.
+        assert delete["cmd"] == ["tmux-test", "delete-buffer", "-b", name]
+        # No call ever carries the payload inside argv.
+        assert not any(payload in " ".join(c["cmd"]) for c in runner.calls)
+
+    def test_paste_failure_propagates_and_cleans_up(self):
+        runner = RecordedRunner(
+            (("load-buffer",), 0, "", ""),
+            (("paste-buffer",), 1, "", "can't find pane: %9"),
+            (("delete-buffer",), 0, "", ""),
+        )
+        with pytest.raises(MuxRefusal) as excinfo:
+            adapter(runner).send_text("%9", "hi;")
+        assert excinfo.value.reason == "gone"
+        assert excinfo.value.capability == "send_text"
+        # Only the buffer this operation created is cleaned up.
+        name = runner.calls[0]["cmd"][3]
+        assert runner.calls[2]["cmd"] == ["tmux-test", "delete-buffer", "-b", name]
+        # Nothing was pasted and nothing more happened: no submit ride.
+        assert [c["cmd"][1] for c in runner.calls] == [
+            "load-buffer", "paste-buffer", "delete-buffer",
+        ]
+
+    def test_multiline_text_is_sanitized_before_the_write(self):
+        # A literal newline is a real Enter in the pane: typing must
+        # never submit by accident, so text is sanitized to ONE line.
+        runner = RecordedRunner(
+            (("load-buffer",), 0, "", ""),
+            (("paste-buffer",), 0, "", ""),
+            (("delete-buffer",), 0, "", ""),
+        )
+        adapter(runner).send_text("%3", "línea uno\nlínea dos")
+        assert runner.calls[0]["input"] == "línea uno línea dos"
+
+    def test_empty_text_refused_without_invoking(self):
+        runner = RecordedRunner()
+        with pytest.raises(HerdrError, match="empty"):
+            adapter(runner).send_text("%3", "  ")
+        assert runner.calls == []
+
+
 class TestProbe:
     """Finding A (live, tmux 3.8 scratch server): ``-V`` answers with NO
     server — a wrapper pointed at a nonexistent socket still prints the
@@ -532,6 +657,14 @@ class TestRefusedSurfaces:
 
 
 class TestFailureMapping:
+    def test_server_killed_during_command_is_unreachable(self):
+        runner = RecordedRunner(
+            (("capture-pane",), 1, "", "server exited unexpectedly\n")
+        )
+        with pytest.raises(MuxRefusal) as excinfo:
+            adapter(runner).read_screen("%3")
+        assert excinfo.value.reason == "unreachable"
+
     def test_no_server_running_is_unreachable(self):
         runner = RecordedRunner(
             (("list-panes",), 1, "", "no server running on /tmp/tmux-1000/default")
