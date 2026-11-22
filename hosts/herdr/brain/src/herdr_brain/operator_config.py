@@ -21,9 +21,9 @@ turn the operator's own habits into panel surfaces:
 
 Validation is row by row, pure and total: a malformed row is discarded
 with one reported reason (file, row, reason) while its healthy siblings
-keep serving, and a broken or unreadable file is treated as empty
-without poisoning the other three. Files reload by mtime on the next
-request — one cheap ``stat`` per surface, guarded by a lock, no restart.
+keep serving. An unparsable dock file keeps its last valid rows, if any;
+a missing or unreadable file clears that surface. Files reload by mtime
+on the next request — one cheap ``stat`` per surface under a lock.
 """
 
 from __future__ import annotations
@@ -202,6 +202,13 @@ def _has_control_characters(value: str) -> bool:
     return any(unicodedata.category(char) == "Cc" for char in value)
 
 
+# Match Collie's typed-line policy without stripping or rewriting argv.
+# The extras are line/paragraph separators and Unicode Bidi_Control.
+_TYPED_LINE_FORBIDDEN = frozenset(
+    "\u2028\u2029\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069"
+)
+
+
 def _slugify(label: str) -> str:
     """A stable id derived from a label: lowercase ascii alphanumerics
     joined by single dashes (``Daily standup`` → ``daily-standup``)."""
@@ -349,6 +356,14 @@ def validate_commands(
     )
 
 
+def _normalize_preset_key(raw: str) -> str:
+    """Normalize reference spellings; the send allowlist still decides admission."""
+    *modifiers, base = raw.strip().lower().split("+")
+    if base == "escape":
+        base = "esc"
+    return "+".join([*dict.fromkeys(mod.strip() for mod in modifiers), base])
+
+
 def validate_keys(
     doc: object, file_name: str = FILE_KEYS
 ) -> Tuple[Tuple[KeyPreset, ...], Tuple[Issue, ...]]:
@@ -361,12 +376,15 @@ def validate_keys(
             return None, "missing keys"
         if not isinstance(keys, list) or not keys:
             return None, "keys must be a non-empty array of key names"
-        for key in keys:
-            if not isinstance(key, str) or key not in SEND_KEY_ALLOWLIST:
-                return None, f"key {key!r} is outside the send-key allowlist"
+        normalized = []
+        for raw in keys:
+            key = _normalize_preset_key(raw) if isinstance(raw, str) else None
+            if key not in SEND_KEY_ALLOWLIST:
+                return None, f"key {raw!r} is outside the send-key allowlist"
+            normalized.append(key)
         if len(keys) > MAX_SEND_KEYS:
             return None, f"keys must use at most {MAX_SEND_KEYS} keys"
-        return KeyPreset(id=row_id, label=label, keys=tuple(keys), scope=scope), None
+        return KeyPreset(id=row_id, label=label, keys=tuple(normalized), scope=scope), None
 
     return _validated_rows(
         doc,
@@ -396,8 +414,8 @@ def validate_launchers(
         for part in argv:
             if not isinstance(part, str) or not part:
                 return None, "argv must contain only non-empty strings"
-            if _has_control_characters(part):
-                return None, "argv must not contain control characters"
+            if _has_control_characters(part) or not _TYPED_LINE_FORBIDDEN.isdisjoint(part):
+                return None, "argv must not contain control characters or line/paragraph separators"
         cwd = None
         if row.get("cwd") is not None:
             cwd_value, reason = _text_field(row, "cwd")
@@ -522,10 +540,8 @@ def _stat_signature(path: Path):
     return (st.st_mtime_ns, st.st_size, st.st_ino)
 
 
-def _load_surface(path: Path, file_name: str, validate) -> Tuple[tuple, Tuple[Issue, ...]]:
-    """Reads and validates one file. A missing file is simply empty; an
-    unreadable or unparsable one becomes a file-level issue and an empty
-    row set — never an exception, never a sibling's problem."""
+def _load_surface(path: Path, file_name: str, validate) -> Tuple[Optional[tuple], Tuple[Issue, ...]]:
+    """Read and validate one file. Only a parse failure returns None rows."""
     try:
         with path.open("rb") as handle:
             doc = tomllib.load(handle)
@@ -533,8 +549,8 @@ def _load_surface(path: Path, file_name: str, validate) -> Tuple[tuple, Tuple[Is
         return (), ()
     except OSError as exc:
         return (), (Issue(file_name, 0, f"cannot read the file: {exc}"),)
-    except tomllib.TOMLDecodeError as exc:
-        return (), (Issue(file_name, 0, f"invalid TOML: {exc}"),)
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
+        return None, (Issue(file_name, 0, f"invalid TOML: {exc}"),)
     return validate(doc, file_name=file_name)
 
 
@@ -593,6 +609,14 @@ class OperatorConfig:
             if entry is not None and entry.signature == signature:
                 return entry.rows, entry.issues
             rows, issues = _load_surface(path, file_name, validate)
+            if rows is None:
+                # roots.toml is a separate cwd authorization policy and
+                # remains fail-closed. Only the four catalogs hold rows.
+                rows = entry.rows if entry is not None and file_name != FILE_ROOTS else ()
+                if rows:
+                    issue = issues[0]
+                    issues = (replace(issue, reason=f"{issue.reason}; keeping the last valid catalog"),)
+            # Cache the failed signature too, so polling never repeats a warning.
             self._cache[surface_name] = _CacheEntry(signature, rows, issues)
             self._reload_counts[surface_name] += 1
             for issue in issues:

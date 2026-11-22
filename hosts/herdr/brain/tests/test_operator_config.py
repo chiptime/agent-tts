@@ -153,6 +153,23 @@ keys = ["down", "enter"]
     assert reasons[4] == "keys must be a non-empty array of key names"
 
 
+def test_presets_normalize_reference_spellings_inside_the_brain_allowlist(writer):
+    writer("keys.toml", '''
+[[keys]]
+label = "Normalized"
+keys = [" Down ", "Escape", "CTRL +U", "ctrl+ctrl+k", "1", "esc"]
+
+[[keys]]
+label = "Invalid"
+keys = ["Enter", "C-c"]
+''')
+    cfg = oc.OperatorConfig()
+    assert [(row.id, row.keys) for row in cfg.key_presets()] == [
+        ("normalized", ("down", "esc", "ctrl+u", "ctrl+k", "1", "esc")),
+    ]
+    assert [issue.row for issue in issues_for(cfg, "keys.toml")] == [2]
+
+
 def test_control_characters_reject_rows_never_sanitize(writer):
     writer(
         "quick-replies.toml",
@@ -208,6 +225,29 @@ argv = ["echo", "a\\nb"]
         issues = issues_for(cfg, file_name)
         assert len(issues) == 1 and issues[0].row == row
         assert "control" in issues[0].reason, (file_name, issues)
+
+
+@pytest.mark.parametrize("escape", [
+    r"\n", r"\u0085", r"\u2028", r"\u2029", r"\u061c", r"\u200e",
+    r"\u200f", r"\u202a", r"\u202e", r"\u2066", r"\u2069",
+])
+def test_launcher_drops_forbidden_argv_whole_without_losing_safe_sibling(writer, escape):
+    writer("launchers.toml", f'''
+[[launchers]]
+label = "Unsafe"
+argv = ["echo", "text{escape}"]
+
+[[launchers]]
+label = "Safe"
+argv = ["echo", "café 東京"]
+''')
+    cfg = oc.OperatorConfig()
+    assert [row.id for row in cfg.launchers()] == ["safe"]
+    with pytest.raises(oc.UnknownRowError):
+        cfg.launch_plan("unsafe")
+    assert cfg.launch_plan("safe").argv == ("echo", "café 東京")
+    issue, = issues_for(cfg, "launchers.toml")
+    assert issue.row == 1 and "control characters" in issue.reason
 
 
 def test_launchers_accept_argv_only_never_a_shell_string(writer):
@@ -401,7 +441,7 @@ def test_mtime_reload_with_cheap_stat_cache(writer):
     assert cfg.reload_counts()["commands"] == 2
 
 
-def test_broken_file_is_isolated_from_its_siblings(writer):
+def test_initial_broken_file_is_empty_and_warns_without_harming_siblings(writer, caplog):
     writer(
         "quick-replies.toml",
         '[[replies]]\nlabel = "Yes"\ntext = "yes"\n',
@@ -410,14 +450,51 @@ def test_broken_file_is_isolated_from_its_siblings(writer):
     cfg = oc.OperatorConfig()
     pane = cfg.for_pane("claude")
     assert [r.label for r in pane.quick_replies] == ["Yes"]  # sibling still serves
-    assert pane.key_presets == ()  # the broken file is treated as empty
+    assert pane.key_presets == ()  # no previous catalog to serve
     keys_issues = issues_for(cfg, "keys.toml")
     assert len(keys_issues) == 1
     assert keys_issues[0].row == 0
     assert keys_issues[0].reason.startswith("invalid TOML:")
+    assert sum("keys.toml: invalid TOML:" in msg for msg in caplog.messages) == 1
     # The invalid rows of a repaired file come back on the next request.
     writer("keys.toml", '[[keys]]\nlabel = "Back"\nkeys = ["enter"]\n')
     assert [p.label for p in cfg.key_presets()] == ["Back"]
+
+
+def test_broken_reload_warns_once_per_version_and_valid_edits_replace_it(writer, caplog):
+    writer("commands.toml", '[[commands]]\nlabel = "One"\ncommand = "/one"\n')
+    cfg = oc.OperatorConfig()
+    assert [row.id for row in cfg.commands()] == ["one"]
+
+    for broken in ('[[commands', '[[commands]]\nlabel = "'):
+        writer("commands.toml", broken)
+        assert [row.id for row in cfg.commands()] == ["one"]
+        report = next(r for r in cfg.check() if r.file == "commands.toml")
+        assert report.row_count == 1
+        assert report.issues[0].row == 0
+        assert "keeping the last valid catalog" in report.issues[0].reason
+    assert sum("commands.toml: invalid TOML:" in msg for msg in caplog.messages) == 2
+
+    # A valid document with only bad rows replaces, rather than reviving, old rows.
+    path = writer("commands.toml", '[[commands]]\nlabel = "Invalid row"\n')
+    assert cfg.commands() == ()
+    assert [issue.row for issue in issues_for(cfg, "commands.toml")] == [1]
+    writer("commands.toml", '[[commands]]\nlabel = "Two"\ncommand = "/two "\n')
+    assert [(row.id, row.command) for row in cfg.commands()] == [("two", "/two ")]
+    assert issues_for(cfg, "commands.toml") == []
+    path.unlink()
+    assert cfg.commands() == ()
+    writer("commands.toml", "[[commands")
+    assert cfg.commands() == ()  # deletion clears the fallback too
+
+
+def test_invalid_utf8_is_an_unparsable_reload(writer):
+    path = writer("keys.toml", '[[keys]]\nlabel = "Back"\nkeys = ["enter"]\n')
+    cfg = oc.OperatorConfig()
+    assert [row.id for row in cfg.key_presets()] == ["back"]
+    path.write_bytes(b"\xff")
+    assert [row.id for row in cfg.key_presets()] == ["back"]
+    assert issues_for(cfg, "keys.toml")[0].reason.startswith("invalid TOML:")
 
 
 def test_missing_file_is_an_empty_list_without_issues(tmp_path, monkeypatch):

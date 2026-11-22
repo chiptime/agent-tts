@@ -197,6 +197,18 @@ class TestOperatorConfigRoute:
             {"id": "nuevo", "label": "Nuevo", "text": "nuevo texto"}
         ]
 
+    def test_parse_errors_keep_each_last_valid_catalog_without_changing_wire_shape(
+        self, tmp_path, monkeypatch
+    ):
+        client = make_client(tmp_path, monkeypatch)
+        before = client.get("/operator/config", params={"agent": "claude"})
+        assert before.status_code == 200
+        assert all(before.json().values())
+        for name in ("quick-replies", "commands", "keys", "launchers"):
+            (tmp_path / "operator" / f"{name}.toml").write_text("[[broken")
+        after = client.get("/operator/config", params={"agent": "claude"})
+        assert (after.status_code, after.content) == (before.status_code, before.content)
+
     def test_is_a_read_route(self):
         assert access.classify("GET", "/operator/config") == "read"
 
