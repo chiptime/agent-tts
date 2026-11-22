@@ -197,6 +197,26 @@ class TestOperatorConfigRoute:
             {"id": "nuevo", "label": "Nuevo", "text": "nuevo texto"}
         ]
 
+    def test_parse_errors_hold_the_dock_catalogs_and_clear_the_launchers(
+        self, tmp_path, monkeypatch
+    ):
+        client = make_client(tmp_path, monkeypatch)
+        before = client.get("/operator/config", params={"agent": "claude"})
+        assert before.status_code == 200
+        assert all(before.json().values())
+        for name in ("quick-replies", "commands", "keys"):
+            (tmp_path / "operator" / f"{name}.toml").write_text("[[broken")
+        after = client.get("/operator/config", params={"agent": "claude"})
+        assert (after.status_code,) == (before.status_code,)
+        for section in ("quick_replies", "commands", "key_presets"):
+            assert after.json()[section] == before.json()[section]
+        # The launcher allowlist is an execution authorization: it fails
+        # closed rather than outliving an edit with stale rows.
+        (tmp_path / "operator" / "launchers.toml").write_text("[[broken")
+        second = client.get("/operator/config", params={"agent": "claude"})
+        assert second.status_code == 200
+        assert second.json()["launchers"] == []
+
     def test_is_a_read_route(self):
         assert access.classify("GET", "/operator/config") == "read"
 

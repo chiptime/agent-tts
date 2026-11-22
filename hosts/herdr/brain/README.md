@@ -932,6 +932,14 @@ overridable via `HERDR_BRAIN_CONFIG_DIR`) turn the operator's habits
 into panel surfaces. Validation is row by row: a malformed row is
 **skipped** with one logged reason while its healthy siblings keep
 serving, and files reload by mtime on the next request — no restart.
+If a file cannot be parsed, the running server logs a warning once for
+that version and keeps serving that file's last valid rows — except the
+launchers file, which is an execution allowlist and fails closed: a
+broken `launchers.toml` serves no launchers, so a removal edit the
+reload never observed cannot be outlived by a stale authorization. A
+file that has never parsed serves no rows, and a parseable edit
+replaces the catalog even if every row fails validation. `roots.toml`
+is not a dock catalog and fails closed as well.
 
 | File | Rows | Serves |
 |---|---|---|
@@ -943,6 +951,13 @@ serving, and files reload by mtime on the next request — no restart.
 Rows are identified by `id` (explicit) or a slug of the label, and
 `scope = "<agent-family>"` makes the row REPLACE the global catalog for
 that family (substitution, not fusion).
+
+Preset key names are normalized at load time (for example, `Down` →
+`down` and `Escape` → `esc`), still subject to the existing eight-key
+limit and send-key allowlist. A failed preset request shows a localized
+error in the PWA without retrying automatically. Launcher arguments
+containing control characters (including bidi controls), line separators
+or paragraph separators cause the whole row to be skipped, not rewritten.
 
 Routes (the launcher/key shapes are a frozen contract for the PWA):
 
@@ -966,8 +981,12 @@ exposed to the LLM. A client can never supply a command line or a key
 sequence — only the id of a row the operator authored.
 
 ```bash
-bin/herdr-brain config check     # per-file report; exit 1 if any row was skipped
+bin/herdr-brain config check     # validates files on disk; exit 1 on any issue
 ```
+
+Brain and Collie use the same four filenames but different schemas.
+See [the Collie compatibility report](operator-toml-compatibility.md)
+before copying a catalog between them.
 
 ## Device pairing and the access gate
 
