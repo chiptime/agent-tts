@@ -52,7 +52,7 @@ from ...herdr import (
 )
 from ...send_receipts import classify_send, text_echoed_on_input
 from ..capabilities import Capabilities, MuxProbe
-from ..keys import is_sendable_key, normalize_key, zellij_key
+from ..keys import is_recipe_key, is_sendable_key, normalize_key, zellij_key
 from ..refusal import MuxRefusal
 
 Runner = Callable[..., subprocess.CompletedProcess]
@@ -343,6 +343,35 @@ class ZellijAdapter:
                 "refused", "keys",
                 f"unsupported key(s): {', '.join(unsupported)} "
                 f"(allowed: {', '.join(SEND_KEY_ALLOWLIST)})",
+            )
+        if not keys:
+            raise MuxRefusal("refused", "keys", "refusing to send an empty key sequence")
+        if len(keys) > MAX_SEND_KEYS:
+            raise MuxRefusal(
+                "refused", "keys", f"too many keys: {len(keys)} (max {MAX_SEND_KEYS})"
+            )
+        translated = [zellij_key(normalize_key(key)) for key in keys]
+        try:
+            self._run_cli(
+                ["action", "send-keys", "--pane-id", pane_id, *translated], "keys"
+            )
+        except HerdrError as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, "error": ""}
+
+    def send_recipe_keys(self, pane_id: str, keys: List[str]) -> dict:
+        """The guarded dialog-recipe surface (T10/S3): the plain allowlist
+        plus the ONE lowercase letters a dialog's own footer named. A
+        single literal character types itself in zellij's send-keys
+        spelling (the live-probed translation already maps it), so only
+        the validation gate widens — and only on this method, which the
+        guarded dialog answer alone calls."""
+        unsupported = sorted({key for key in keys if not is_recipe_key(key)})
+        if unsupported:
+            raise MuxRefusal(
+                "refused", "keys",
+                f"unsupported key(s): {', '.join(unsupported)} "
+                "(allowed: the dialog key dialect plus footer-named letters)",
             )
         if not keys:
             raise MuxRefusal("refused", "keys", "refusing to send an empty key sequence")

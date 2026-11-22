@@ -1952,3 +1952,62 @@ class TestMenuVoiceAnswers:
         assert result["outcome"] == "refused"
         assert result["reason"] == "changed"
         assert stub.key_calls == []
+
+
+class TestMenuVoiceSameSource:
+    """Verifier BLOCKER 1 regression (claude-menu-config-panel.txt).
+
+    read_dialog runs the generic heuristic FIRST: on the config-panel
+    screen it "explains" numbered TRANSCRIPT rows (module-1.ts...) as
+    options. The menu delegation then mapped that spoken index onto the
+    structured MENU's options -- the user picked one thing, a different
+    footer key was pressed, and an audit line reported success. A menu
+    option rides the recipe surface ONLY when the explained options came
+    from the same structured menu; anything else refuses with the
+    existing code and sends NOTHING."""
+
+    CONFIG_PANEL = (
+        Path(__file__).parent / "fixtures" / "dialogs" / "claude-menu-config-panel.txt"
+    ).read_text(encoding="utf-8")
+
+    @pytest.fixture
+    def panel_tools(self, settings):
+        claude = AgentInfo(**{**BLOCKED_AGENT.__dict__, "agent": "claude"})
+        stub = DialogStub(screen=self.CONFIG_PANEL)
+        stub._agents = [claude]
+        built = BrainTools(settings, herdr=stub)
+        return built, stub, claude
+
+    def test_a_heuristic_explain_never_dispatches_a_menu_key(self, panel_tools):
+        """The pre-fix repro, verbatim: option 1 sent the menu's FIRST
+        footer recipe (`up` = "to tabs") and option 2 sent `esc` while
+        reporting success. After the fix every such answer is refused
+        with no keys -- exactly the base behavior."""
+        built, stub, claude = panel_tools
+        explain_and_advance_turn(built, claude)
+
+        for utterance in ("selecciona la opción 1", "selecciona la opción 2"):
+            result = json.loads(built.answer_dialog(utterance, claude))
+            assert result["outcome"] == "refused", (utterance, result)
+        assert stub.key_calls == []
+
+    def test_the_menu_explains_its_own_footer_actions_when_heuristic_stays_silent(
+        self, settings
+    ):
+        """The marketplaces screen (no numbered rows) walks the
+        structured branch at explain time; there the spoken option IS
+        the footer action it sends."""
+        claude = AgentInfo(**{**BLOCKED_AGENT.__dict__, "agent": "claude"})
+        screen = (
+            Path(__file__).parent / "fixtures" / "dialogs" / "claude-menu-marketplaces.txt"
+        ).read_text(encoding="utf-8")
+        stub = DialogStub(screen=screen)
+        stub._agents = [claude]
+        built = BrainTools(settings, herdr=stub)
+
+        explain_and_advance_turn(built, claude)
+        result = json.loads(built.answer_dialog("selecciona la opción 2", claude))
+
+        assert result["outcome"] == "answered"
+        assert result["title"] == "Update"
+        assert stub.key_calls == [{"pane_id": "w1:p9", "keys": ["u"]}]

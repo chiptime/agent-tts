@@ -112,6 +112,26 @@ def is_sendable_key(raw: str) -> bool:
         return False
 
 
+#: The guarded DIALOG-recipe dialect (T10/S3): the raw allowlist plus
+#: the ONE lowercase letters a dialog's own footer named. Only the
+#: recipe surface (`send_recipe_keys`) validates against this — the
+#: plain keys surface keeps SENDABLE_KEYS, which is what keeps the raw
+#: `POST /pane/keys` route letter-free.
+_RECIPE_LETTER = re.compile(r"[a-z]")
+
+
+def is_recipe_key(raw: str) -> bool:
+    """Whether `raw` is a guarded dialog-recipe key; never raises.
+
+    Same closed shape as :func:`is_sendable_key` with the narrow
+    letters channel: a single lowercase letter (case-sensitive, so an
+    uppercase token stays prose) or anything the plain allowlist
+    already admits. Digits ride the plain allowlist; a digit is never
+    minted here because the menu grammar never emits one.
+    """
+    return is_sendable_key(raw) or bool(_RECIPE_LETTER.fullmatch(raw or ""))
+
+
 #: Neutral → tmux key-table spellings (``enter``→``Enter``, ``esc``→
 #: ``Escape``, ``shift+tab``→``BTab``).
 _TMUX_NAMES = {

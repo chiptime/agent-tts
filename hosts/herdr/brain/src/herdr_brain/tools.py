@@ -2608,14 +2608,24 @@ class BrainTools:
         # T10/S11+S7: a structured MENU has no row-to-button mapping —
         # its options are the footer's own keys, never the highlighted
         # rows — so the spoken option rides the SAME guarded structured
-        # path a PWA tap uses (the S5 delegation discipline). Everything
-        # else keeps the legacy walk below, byte for byte.
+        # path a PWA tap uses (the S5 delegation discipline) — but ONLY
+        # when the explained options came from that same structured
+        # menu. read_dialog runs the generic heuristic first, and a
+        # menu screen can therefore be "explained" with numbered
+        # TRANSCRIPT rows (the config panel's module-1.ts...); mapping
+        # that spoken index onto the menu's footer actions sends a key
+        # the user never heard offered. Equality of the spoken labels
+        # with the menu's own option labels is the same-source proof;
+        # anything else falls through to the legacy walk, which refuses
+        # with the existing codes and sends nothing.
         structured = self._spoken_structured_model(active)
         if (
             structured is not None
             and structured.kind == "menu"
             and 0 <= index < len(structured.options)
             and structured.options[index].keys
+            and [str(opt.get("title") or "") for opt in options]
+            == [option.label for option in structured.options]
         ):
             result = self.answer_structured_dialog(
                 active.pane_id, structured.fingerprint, option=index

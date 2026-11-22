@@ -96,6 +96,14 @@ class HerdrMuxAdapter:
     def send_keys(self, pane_id: str, keys: List[str]) -> dict:
         return self._client.send_keys(pane_id, keys)
 
+    def send_recipe_keys(self, pane_id: str, keys: List[str]) -> dict:
+        """The guarded dialog-recipe surface (T10/S3): delegates to the
+        client's ``send_recipe_keys`` — allowlist plus the lowercase
+        letters a dialog's own footer named. Callable only by the
+        guarded dialog answer, which already re-read and signature-verified
+        the screen before anything is sent."""
+        return self._client.send_recipe_keys(pane_id, keys)
+
     def pane_run(self, pane_id: str, command: str) -> None:
         return self._client.pane_run(pane_id, command)
 
