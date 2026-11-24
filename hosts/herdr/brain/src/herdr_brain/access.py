@@ -298,6 +298,10 @@ _DEVICE_EXEMPT_RULES = (
         r"^/[A-Za-z0-9][A-Za-z0-9._-]*"
         r"\.(js|css|svg|png|ico|webp|jpe?g|gif|woff2?|ttf|webmanifest|map)$"
     )),
+    # The i18n dictionaries sit one directory down (static/i18n/<locale>.js)
+    # and are loaded by <script> tags, which cannot send a bearer. Exactly
+    # that one shape: no nesting, no other directory, no other suffix.
+    ("GET", re.compile(r"^/i18n/[A-Za-z0-9][A-Za-z0-9_-]*\.js\Z")),
     ("POST", re.compile(r"^/approval/[^/]+/action$")),  # ntfy: its own token
     (None, re.compile(r"^/speech/[^/]+/(next|cancel)$")),  # job-token bound
     ("POST", re.compile(r"^/pair$")),  # the bootstrap itself (defence in depth)

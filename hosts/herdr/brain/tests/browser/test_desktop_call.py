@@ -27,23 +27,13 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 from playwright.sync_api import Browser, BrowserContext, Page, Route
 
+from tests.browser.pwa_static import static_routes
+
 STATIC = Path(__file__).resolve().parents[2] / "src/herdr_brain/static"
 FIXTURES = Path(__file__).resolve().parents[1] / "e2e/fixtures"
 ORIGIN = "http://127.0.0.1:41731"
 
-STATIC_FILES = {"/": "index.html", "/index.html": "index.html"}
-for _name in (
-    "app.js", "endpointing.js", "vad.js", "approval.js", "reader.js",
-    "toast.js", "announce.js", "speech.js", "consult.js",
-    "herd-group.js", "sw.js", "manifest.webmanifest", "icon.svg",
-    "karaoke.js", "pairing.js", "destructive.js", "history.js", "dialogs.js",
-    "receipts.js", "push.js", "calls.js",
-    "i18n.js", "i18n/es.js", "i18n/en.js", "settings.js", "updates.js", "dock.js",
-    "mermaid.min.js", "mermaid-viewer.js", "tts-engine.js",
-    "stream-uplink.js", "stream-worklet.js",
-):
-    if (STATIC / _name).is_file():
-        STATIC_FILES["/" + _name] = _name
+STATIC_FILES = static_routes()
 CONTENT_TYPES = {
     ".html": "text/html", ".js": "application/javascript",
     ".svg": "image/svg+xml", ".webmanifest": "application/manifest+json",
@@ -153,6 +143,13 @@ def make_route(
                 status=200,
                 json={"enforced": False, "current": None, "devices": []},
             )
+        if method == "GET" and path == "/hook/permissions" and not query:
+            # Held Claude hook permissions (f7e S3): the 5s-beat poll of
+            # the global hold card; nothing held keeps it hidden.
+            return route.fulfill(json={"pending": []})
+        if method == "GET" and path == "/session/roots" and not query:
+            return route.fulfill(json={"roots": [], "recents": [], "spaces": [],
+                                       "harnesses": [], "mux": {"name": "herdr", "children": ["herdr"]}})
         if method == "GET" and path == "/call-history" and set(query) <= {"before", "limit"}:
             return route.fulfill(json={"turns": service.turns, "has_more": False})
         if method == "GET" and path == "/call-history/rendered" and set(query) <= {"before", "limit"}:

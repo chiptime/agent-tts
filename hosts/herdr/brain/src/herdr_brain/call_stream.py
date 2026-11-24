@@ -44,6 +44,13 @@ DEFAULT_PREROLL_MS = 500
 PASS_INTERVAL_MS = 1000
 WINDOW_CAP_MS = 5000
 STREAM_PREROLL_MS = 500  # utterance origin begins ~500 ms before onset
+# The neural (Silero) onset arrives AFTER the voice began: measured on a
+# real Chromium capture of one phrase it trailed the voice by 230 ms with
+# browser DSP off and by 718 ms with noise suppression + AGC on (the PWA's
+# own constraints). STREAM_PREROLL_MS is shorter than that lag, so a hinted
+# origin cut the first word out of every window of the turn. The hinted
+# origin therefore reaches back further; the turn boundary still clamps it.
+NEURAL_ONSET_BACKDATE_MS = 1200
 MIN_PASS_AUDIO_MS = 300  # never run whisper on a sliver of audio
 
 # L19 finals parity: a parked window whose confirmation REVISES the tail
@@ -495,8 +502,9 @@ class StreamingTranscriptionSession:
         amputate the head of the phrase (2026-11-17 device failure:
         "solo me toma las últimas palabras"; the audio sits in the ring,
         only the origin excluded it): when the neural onset precedes the
-        client's start, the origin back-dates to it (minus the same
-        preroll, never before the turn boundary)."""
+        client's start, the origin back-dates to it (minus
+        :data:`NEURAL_ONSET_BACKDATE_MS`, the measured Silero confirmation
+        lag, never before the turn boundary)."""
         self._generation += 1
         self._active = True
         self._error_latched = False
@@ -514,7 +522,8 @@ class StreamingTranscriptionSession:
         )
         if origin_hint_ms is not None and origin_hint_ms >= self._boundary_ms:
             hinted = max(
-                self._boundary_ms, float(origin_hint_ms) - STREAM_PREROLL_MS
+                self._boundary_ms,
+                float(origin_hint_ms) - NEURAL_ONSET_BACKDATE_MS,
             )
             origin = min(origin, hinted)
         self._origin_ms = origin

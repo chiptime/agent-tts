@@ -148,6 +148,8 @@ def test_pwa_shell_health_and_static_assets_stay_open(client, state_dir):
         "/manifest.webmanifest",
         "/icon.svg",
         "/mermaid.min.js",
+        "/i18n/es.js",
+        "/i18n/en.js",
     ):
         resp = client.get(path)
         assert resp.status_code == 200, path

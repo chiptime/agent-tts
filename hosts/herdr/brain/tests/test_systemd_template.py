@@ -18,6 +18,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.hermetic_path import system_path
+
 REPO_ROOT = Path(__file__).resolve().parents[4]
 BRAIN_SRC = REPO_ROOT / "hosts" / "herdr" / "brain"
 DEPLOY_SRC = BRAIN_SRC / "deploy"
@@ -109,7 +111,7 @@ class Rig:
     def env(self, **extra: str) -> dict:
         env = {
             "HOME": str(self.home),
-            "PATH": f"{self.tools}:/usr/bin:/bin",
+            "PATH": f"{self.tools}:{system_path(self.tmp)}",
             "XDG_CONFIG_HOME": str(self.xdg_config),
             "XDG_STATE_HOME": str(self.tmp / "xdg-state"),
             "FAKE_SYSTEMCTL_LOG": str(self.systemctl_log),

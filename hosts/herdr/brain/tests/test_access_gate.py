@@ -478,6 +478,23 @@ def test_pair_without_origin_from_non_loopback_host_is_rejected():
         # carved into it is still data.
         ("GET", "/history.js", True),  # a static asset name, not a route
         ("GET", "/events.js", True),
+        # The i18n dictionaries live one level down and are loaded by
+        # <script> tags that cannot send a bearer: without this exemption
+        # every pairing turns the PWA's labels into raw keys.
+        ("GET", "/i18n/es.js", True),
+        ("GET", "/i18n/en.js", True),
+        # ...but the exemption is exactly that one shape: no other
+        # directory, no nesting, no traversal, no other suffix or method.
+        ("GET", "/i18n/", False),
+        ("GET", "/i18n/es.json", False),
+        ("GET", "/i18n/a/b.js", False),
+        ("GET", "/i18n/../herd", False),
+        ("GET", "/i18n/..%2fherd", False),
+        ("GET", "/other/es.js", False),
+        ("POST", "/i18n/es.js", False),
+        ("HEAD", "/i18n/es.js", False),
+        # `$` would accept one trailing newline; the exemption must not.
+        ("GET", "/i18n/es.js\n", False),
     ],
 )
 def test_device_exemption_matrix(method, path, exempt):

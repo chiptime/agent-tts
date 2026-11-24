@@ -14,6 +14,8 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 from playwright.sync_api import BrowserContext, Page, Request, Route
 
+from tests.browser.pwa_static import static_routes
+
 
 RUNTIME = Path(tempfile.gettempdir()) / "herdr-brain-browser"
 STATIC = Path(__file__).resolve().parents[2] / "src/herdr_brain/static"
@@ -275,23 +277,7 @@ class KaraokeHarness:
         self.static_responses = {}
         self.tts_replies = []
         self.api = {}
-        self.static = {"/": "index.html", "/index.html": "index.html"}
-        for name in (
-            "app.js", "endpointing.js", "vad.js", "approval.js", "reader.js",
-            "toast.js", "announce.js", "speech.js", "consult.js",
-            "herd-group.js", "sw.js",
-            "manifest.webmanifest", "icon.svg", "karaoke.js",
-            "mermaid.min.js", "mermaid-viewer.js", "tts-engine.js",
-            "pairing.js", "destructive.js", "history.js", "dialogs.js",
-            "receipts.js", "send-track.js", "push.js", "calls.js",
-            # S4/S3 PWA unit: i18n runtime + dictionaries, settings,
-            # update notice, operator dock.
-            "i18n.js", "i18n/es.js", "i18n/en.js",
-            "settings.js", "updates.js", "dock.js",
-            "stream-uplink.js", "stream-worklet.js",
-        ):
-            if (STATIC / name).is_file():
-                self.static["/" + name] = name
+        self.static = static_routes()
         if history is None:
             history = [
                 {"role": "user", "text": "A synthetic question.", "ts": "2026-01-01T00:00:00Z"},
@@ -333,6 +319,14 @@ class KaraokeHarness:
         # Held Claude hook permissions (f7e S3): the 5s-beat poll the
         # global hold card runs. Default keeps it hidden (nothing held).
         self.respond("/hook/permissions", {"pending": []})
+        # f7f S4: every open of the conversation sheet refetches
+        # /session/roots for its "Espacios" section. The empty
+        # herdr-backed default renders "Sin espacios"; suites that
+        # exercise the spaces or the New/Resume sheet override it.
+        self.respond("/session/roots", {
+            "roots": [], "recents": [], "spaces": [], "harnesses": [],
+            "mux": {"name": "herdr", "children": ["herdr"]},
+        })
         # Web Push (S5): the boot /push/key poll the Avisos card runs.
         # Default keeps every legacy test on the soft-off stance (no
         # VAPID keys) — the card renders its operator hint and nothing

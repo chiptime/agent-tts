@@ -1103,6 +1103,65 @@ def test_stream_window_starts_at_onset_preroll(tmp_path):
         assert model.calls[0][2] == 16000
 
 
+def test_neural_onset_hint_backdates_past_the_silero_confirmation_lag():
+    """Silero confirms an onset AFTER the voice began: measured on a real
+    Chromium capture of one phrase, speech_start trailed the voice by
+    230 ms (browser DSP off) and by 718 ms (noise suppression + AGC on:
+    voice at 45010 ms, speech_start at 45728 ms). The origin must reach
+    back further than that lag, or the first word is missing from the
+    finals AND from the full-window transcript of the turn ("dime qué
+    entiendes" dispatched as "qué entiendes")."""
+    import asyncio
+
+    from herdr_brain.call_stream import (
+        AudioRingBuffer,
+        StreamingTranscriptionSession,
+    )
+
+    measured_lag_ms = 718.0
+    voice_began_ms = 45010.0
+    ring = AudioRingBuffer()
+    ring.append(FRAME_100MS * 600)  # 60 s of timeline
+    session = StreamingTranscriptionSession(
+        _FakeSocket(), _SeamTranscriber(), ring, language="es", initial_prompt=None
+    )
+
+    async def scenario():
+        session.start_utterance(origin_hint_ms=voice_began_ms + measured_lag_ms)
+        await session.aclose()
+
+    run_async(scenario())
+    assert session.utterance_start_ms < voice_began_ms, (
+        session.utterance_start_ms, voice_began_ms
+    )
+    assert session.origin_ms == session.utterance_start_ms
+
+
+def test_neural_onset_backdate_never_crosses_the_previous_turn_boundary():
+    """The wider back-date is still clamped by the last turn boundary: a
+    finished turn's audio never re-enters the next window."""
+    import asyncio
+
+    from herdr_brain.call_stream import (
+        AudioRingBuffer,
+        StreamingTranscriptionSession,
+    )
+
+    ring = AudioRingBuffer()
+    ring.append(FRAME_100MS * 600)
+    session = StreamingTranscriptionSession(
+        _FakeSocket(), _SeamTranscriber(), ring, language="es", initial_prompt=None
+    )
+
+    async def scenario():
+        session._boundary_ms = 44900.0
+        session.start_utterance(origin_hint_ms=45500.0)
+        await session.aclose()
+
+    run_async(scenario())
+    assert session.utterance_start_ms == 44900.0
+
+
 def test_no_streaming_pass_before_stream_start(tmp_path):
     """Compute guard: idle audio without stream start runs NO inference —
     the turn-end transcribe still works exactly as today."""

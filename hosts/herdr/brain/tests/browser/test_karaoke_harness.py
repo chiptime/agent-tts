@@ -149,9 +149,9 @@ EXPECTED_DIGESTS = {
     # (stopFailureToast pure block) branches on the server's stable
     # dialog_open reason.
     # Parity-w2 S8: history search and the adaptive state poll.
-    "/app.js": "84ee05e073410a60278b51210b9ccfa3bd2a345f24a79841ecae8bf2c0696999",
+    "/app.js": "52682294b7cf3137ec21143fc9ea548eb07d8d8384a9bebb6edb0abff308eea0",
     "/history.js": "fa3526827b3e791bdc8f5950e398f3e318a2bff1c85ba684f0231d22d74e08d9",
-    "/push.js": "e1acadd98d95420cf9924ea633b32d9ec5b51c8654c5e7df923c2bbc5547f52c",
+    "/push.js": "28e9dd9c444f8f5948d7fc3186a461cf113c1d4de8266e9de769c0781502eaa7",
     "/receipts.js": "df01a313d8f6101bd9601d5a2a65eb420df7791c417a09e2d0d8c269a36742b0",
     # dialogs.js re-pinned for the parity-f7d follow-up: MODEL_SWITCH_COMMANDS
     # gains pi (/switch, omp's own box on the same TUI) and opencode +

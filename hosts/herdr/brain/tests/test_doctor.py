@@ -12,6 +12,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(ROOT / "tools"))
 from herdr_onboarding import cli, doctor
+from tests.hermetic_path import system_path
 
 
 @pytest.fixture
@@ -240,7 +241,7 @@ def test_deliberate_fix_only_captures_credentials_even_with_marker(rig, monkeypa
 
 @pytest.mark.parametrize("role", ["brain", "plugin"])
 @pytest.mark.parametrize("command", [["doctor"], ["--doctor"], ["first-run", "--doctor"]])
-def test_real_dispatch_before_bootstrap_or_config_writes(tmp_path, role, command):
+def test_real_dispatch_before_bootstrap_or_config_writes(tmp_path, tmp_path_factory, role, command):
     # Copied launcher + shared package, installed interpreter: no real app services.
     host = "brain" if role == "brain" else "tts-plugin"
     checkout = tmp_path / "checkout"
@@ -256,7 +257,7 @@ def test_real_dispatch_before_bootstrap_or_config_writes(tmp_path, role, command
     env = {"HOME": str(home), "XDG_CONFIG_HOME": str(config), "XDG_DATA_HOME": str(data),
             "XDG_STATE_HOME": str(tmp_path / "state"), "XDG_CACHE_HOME": str(tmp_path / "cache"),
             "HERDR_TTS_DAEMON_PID_FILE": str(tmp_path / "absent.pid"),
-            "PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"}
+            "PATH": system_path(tmp_path_factory.mktemp("sys")), "PYTHONDONTWRITEBYTECODE": "1"}
     before = snapshot(tmp_path)
     result = subprocess.run(["bash", str(next(launcher.iterdir())), *command, "--json"],
                             env=env, capture_output=True, text=True, timeout=30)

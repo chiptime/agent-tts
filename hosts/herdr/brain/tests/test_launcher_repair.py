@@ -16,6 +16,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from tests.hermetic_path import system_path
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 BRAIN_LAUNCHER = REPO_ROOT / "hosts" / "herdr" / "brain" / "bin" / "herdr-brain"
@@ -70,7 +71,7 @@ def sandbox(tmp_path):
 def _env(tmp_path: Path, home: Path, stubs: Path, **extra: str) -> dict:
     env = {
         "HOME": str(home),
-        "PATH": f"{stubs}:/usr/bin:/bin",
+        "PATH": f"{stubs}:{system_path(tmp_path)}",
         "XDG_CONFIG_HOME": str(tmp_path / "xdg-config"),
         "XDG_STATE_HOME": str(tmp_path / "xdg-state"),
     }

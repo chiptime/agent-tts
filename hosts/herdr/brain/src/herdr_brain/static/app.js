@@ -1243,7 +1243,14 @@
    * is truncation-only and never gates the fetch), and re-applies held
    * HTML by the same role+text content key renderGlance reconciles on. */
 
-  var reader = Reader.createReader({ doc: document, http: fetch });
+  /* The rendered snapshots are READS: once a device is paired the brain
+   * gates reads too (S11), so they ride readFetch (device bearer + the
+   * pairing offer on a 403) like every other poll. A bare fetch got 403
+   * on a paired phone and silently dropped the formatted view and its
+   * tap-to-listen anchors. readFetch is a hoisted declaration: the lookup
+   * happens per request, after the pairing card exists. */
+  function readerHttp(url) { return readFetch(url); }
+  var reader = Reader.createReader({ doc: document, http: readerHttp });
   /* The call drawer renders the CALL transcript, not the pane transcript:
    * a second reader instance mounts /call-history/rendered — the same
    * mount/neutralize/harden contracts, content-keyed by role+text (the
@@ -1252,7 +1259,7 @@
    * replaced wholesale per fetch. */
   var callReader = Reader.createReader({
     doc: document,
-    http: fetch,
+    http: readerHttp,
     renderedUrl: function () { return "/call-history/rendered"; },
   });
   var mermaidViewer = typeof MermaidViewer !== "undefined"
