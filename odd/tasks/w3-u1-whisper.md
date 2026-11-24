@@ -10,7 +10,7 @@ Branch: `feat/w3-u1-whisper`; delivery: local work-unit commit; runner: `PYTHOND
 ## Tasks
 - T1 [S1,S3] Localized `es`/`en` natural vocabulary prompt + tests; route: delegated writer (context backstop); status: done; commit: see L7.
 - T2 [S2,S3] Whole-turn sign-off hallucination guard (Option A) + tests; route: inline (about 70 changed lines); status: done; commit: see L7.
-- T3 [S1–S3] Independent verification and per-S# verdict; status: pending.
+- T3 [S1–S3] Independent verification and per-S# verdict; status: done; verifier: lead review (177/177 STT+call tests passed; S1/S2/S3 verified; C1/C2 intact).
 
 ## Log
 - L1: Hito **W3-U1 (Live STT: prompt natural Whisper por idioma + guardia contra alucinaciones)** de Ola 3. El operador ya aceptó el brief y los defaults de Ola 3: investiga en solo lectura, implementa y verifica directamente. Preservar `NEURAL_ONSET_BACKDATE_MS = 1200`; no tocar `static/`, `docs/paridad/ROADMAP.md` ni `odd/tasks/parity-wave3.md`. No merge ni push.
