@@ -39,10 +39,9 @@
       return value && value !== key ? value : fallback;
     }
 
-    /* State as the card renders it: serverKeys = the brain has VAPID
-     * keys; subscription = this browser's endpoint (kept locally so the
-     * card survives reloads without asking the server who we are). */
+    /* The browser owns the subscription across page reloads. */
     var state = { serverKeys: null, enabled: false, endpoint: null, busy: false };
+    var subscriptionRevision = 0;
 
     function el(tag, className, text) {
       var node = doc.createElement(tag);
@@ -133,6 +132,7 @@
     /* ---- the wire ---- */
 
     function refresh() {
+      var revision = ++subscriptionRevision;
       return request("/push/key", { cache: "no-store" })
         .then(function (resp) {
           if (!resp.ok) return null;
@@ -145,7 +145,19 @@
           state.serverKeys = info.enabled;
           state.publicKey = info.publicKey;
           render();
-          return state;
+          if (!info.enabled || !info.publicKey || !getRegistration || state.busy ||
+              notificationPermission() !== "granted") return state;
+          return Promise.resolve(getRegistration()).then(function (registration) {
+            if (!registration || !registration.pushManager) return null;
+            return registration.pushManager.getSubscription();
+          }).then(function (subscription) {
+            if (revision === subscriptionRevision && !state.busy && subscription && sameKey(subscription, applicationServerKey(info.publicKey))) {
+              state.endpoint = subscription.endpoint;
+              state.enabled = true;
+              render();
+            }
+            return state;
+          });
         })
         .catch(function () { return null; });
     }
@@ -175,6 +187,7 @@
 
     function enablePush(button) {
       if (state.busy || !state.publicKey) return Promise.resolve(null);
+      subscriptionRevision++;
       state.busy = true;
       button.disabled = true;
       var replaces = state.endpoint || null;
@@ -229,6 +242,7 @@
 
     function disablePush(button) {
       if (state.busy || !state.endpoint) return Promise.resolve(null);
+      subscriptionRevision++;
       state.busy = true;
       button.disabled = true;
       var endpoint = state.endpoint;

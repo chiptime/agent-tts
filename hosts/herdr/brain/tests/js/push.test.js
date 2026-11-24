@@ -128,6 +128,44 @@ function findButton(root, className) {
 
 /* ---- refresh / render ---- */
 
+test("refresh restores an existing matching browser subscription after reopening", async () => {
+  const made = makeUI();
+  made.registration.pushManager.getSubscription = () => Promise.resolve(
+    existingSubscription("BRAINKEY", made.registration.calls)
+  );
+  made.http.responder.queue = [{ status: 200, json: { enabled: true, public_key: "BRAINKEY" } }];
+  await made.ui.refresh();
+  assert.equal(made.ui.state().endpoint, SUBSCRIPTION.endpoint);
+  assert.ok(findButton(made.doc.getElementById("push-box"), "push-test"));
+  assert.deepEqual(made.http.calls.map((call) => call.url), ["/push/key"]);
+});
+
+test("refresh does not trust a subscription for another server key", async () => {
+  const made = makeUI();
+  made.registration.pushManager.getSubscription = () => Promise.resolve(
+    existingSubscription("OTHERKEY", made.registration.calls)
+  );
+  made.http.responder.queue = [{ status: 200, json: { enabled: true, public_key: "BRAINKEY" } }];
+  await made.ui.refresh();
+  assert.equal(made.ui.state().endpoint, null);
+  assert.equal(findButton(made.doc.getElementById("push-box"), "push-test"), null);
+});
+
+test("a stale refresh cannot restore a subscription after disable", async () => {
+  const made = makeUI();
+  let finishRead;
+  made.ui.state().endpoint = SUBSCRIPTION.endpoint;
+  made.registration.pushManager.getSubscription = () => new Promise((resolve) => { finishRead = resolve; });
+  made.http.responder.queue = [{ status: 200, json: { enabled: true, public_key: "BRAINKEY" } }];
+  const refreshing = made.ui.refresh();
+  while (!finishRead) await new Promise((resolve) => setImmediate(resolve));
+  made.registration.pushManager.getSubscription = () => Promise.resolve({ unsubscribe: () => Promise.resolve(true) });
+  await made.ui.disable({ disabled: false });
+  finishRead(existingSubscription("BRAINKEY", made.registration.calls));
+  await refreshing;
+  assert.equal(made.ui.state().endpoint, null);
+});
+
 test("refresh reads /push/key and renders the card", async () => {
   const { ui, doc } = makeUI();
   ui.state().serverKeys = null;
