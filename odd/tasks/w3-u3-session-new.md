@@ -10,7 +10,7 @@ Branch: `feat/w3-u3-session-new` (base `main` 0128877). Delivery: local work-uni
 
 ## Tasks
 
-- [x] T1 (S1, S2, inline) — new `session_launcher.py` (`launchable_harnesses`, `resolve_launch_harness`), routes `/session/roots`, `/session/new`, `/session/resume` consume it; tests `tests/test_session_harness_source.py`. Commit: a553f28. RED: `ImportError: cannot import name 'session_launcher'` (collection error); GREEN: tests/test_session*.py + test_tools_create_session.py 153 passed; full unit/API suite 4733 passed (browser/e2e not run, no static touched).
+- [x] T1 (S1, S2, inline) — new `session_launcher.py` (`launchable_harnesses`, `resolve_launch_harness`), routes `/session/roots`, `/session/new`, `/session/resume` consume it; tests `tests/test_session_harness_source.py`. Commit: a28a8fc. RED: `ImportError: cannot import name 'session_launcher'` (collection error); GREEN: tests/test_session*.py + test_tools_create_session.py 153 passed; full unit/API suite 4733 passed (browser/e2e not run, no static touched).
 - [x] T2 (S1, S2) — independent verifier verdict per S#: PASS. Verifier checks executed by lead (session suites 153/153 passed; C1 auth/audit intact; C2 static untouched; 13/13 harness seam tests green).
 
 Route: inline (small, one understood change, ~60 lines; no writer trigger). Risk: item 3? The closed list and its refusals are byte-identical; no contract changed -> `Risk: none` (see Log for the shared-code check).
