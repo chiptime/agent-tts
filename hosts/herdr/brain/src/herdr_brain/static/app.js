@@ -119,7 +119,8 @@
   var holdWhat = $("hook-permission-what");
   var holdAllow = $("hp-allow");
   var holdDeny = $("hp-deny");
-  var viewScreen = $("view-screen");
+  var mirrorScreen = $("mirror-screen");
+  var viewScreen = mirrorScreen;
   var convList = $("conv-list");
   var herdNote = $("herd-note");
   var toastEl = $("toast");
@@ -146,19 +147,25 @@
   var glanceEmpty = $("glance-empty");
   var glanceLabel = $("glance-label");
   var tabAgent = $("tab-agent");
-  var tabScreen = $("tab-screen");
-  var agentPanel = $("agent-panel");
-  var screenPanel = $("screen-panel");
-  var tabHistory = $("tab-history");
   var tabTerminal = $("tab-terminal");
-  var historyPanel = $("history-panel");
+  var tabScreen = tabTerminal;
+  var agentPanel = $("agent-panel");
   var terminalPanel = $("terminal-panel");
+  var screenPanel = terminalPanel;
+  var tabHistory = $("tab-agent");
+  var historyPanel = $("agent-panel");
   var historyTurns = $("history-turns");
   var historyMore = $("history-more");
   var historyEmpty = $("history-empty");
   var mirrorWrap = $("mirror-wrap");
-  var mirrorScreen = $("mirror-screen");
   var mirrorEmpty = $("mirror-empty");
+  var termWrapToggle = $("terminal-wrap-toggle");
+  var termScrollBottom = $("terminal-scroll-bottom");
+  var historyFindToggle = $("history-find-toggle");
+  var historyFindClose = $("history-find-close");
+  var historyFindBar = document.querySelector(".history-find-bar");
+  var cockpitFsToggle = $("cockpit-fullscreen-toggle");
+  var cockpitFsExit = $("cockpit-fullscreen-exit");
   var diagPanel = $("diag-panel");
   var diagText = $("diag-text");
   var diagStatus = $("diag-status");
@@ -1083,6 +1090,7 @@
     if (pendingSheetOpen) { closePendingSheet(); return; }
     if (convSheetOpen && !settingsOpen) { closeConvSheet(); return; }
     if (settingsOpen) { closeSettings(); return; }
+    if (cockpitFullscreen) { setCockpitFullscreen(false); return; }
     if (settingsPanel && settingsPanel.get && settingsPanel.get().zen) {
       settingsPanel.setZen(false);
       return;
@@ -2093,6 +2101,28 @@
     return [ws, model, ctx].filter(Boolean).join(" · ");
   }
 
+  /* Canonical display name for the agent harness (third line in conv-row). */
+  function agentHarnessLabel(agent) {
+    var raw = ((agent && agent.agent) || "").toLowerCase().trim();
+    if (!raw) return "";
+    var LABELS = {
+      agy: "Antigravity",
+      antigravity: "Antigravity",
+      opencode: "OpenCode",
+      opencode2: "OpenCode",
+      claude: "Claude Code",
+      codex: "Codex",
+      pi: "Pi",
+      omp: "Pi",
+      cursor: "Cursor",
+      kiro: "Kiro",
+      muse: "Muse",
+      grok: "Grok",
+      hermes: "Hermes"
+    };
+    return LABELS[raw] || raw;
+  }
+
   /* "24.3k/200k" from {used, limit}; null when the server sent no
    * window (no catalog, unknown model) — never guessed client-side. */
   function formatContextNumber(value) {
@@ -2227,6 +2257,9 @@
         var subEl = document.createElement("span");
         subEl.className = "cr-sub";
         mainEl.appendChild(subEl);
+        var harnessEl = document.createElement("span");
+        harnessEl.className = "cr-harness";
+        mainEl.appendChild(harnessEl);
         var hostEl = document.createElement("span");
         hostEl.className = "cr-host hidden";
         mainEl.appendChild(hostEl);
@@ -2254,19 +2287,31 @@
       var mainNode = dotNode.nextSibling;
       var nameNode = mainNode.firstChild;
       var subNode = nameNode.nextSibling;
+      var harnessNode = mainNode.querySelector(".cr-harness");
+      if (!harnessNode) {
+        harnessNode = document.createElement("span");
+        harnessNode.className = "cr-harness";
+        var hostRef = mainNode.querySelector(".cr-host");
+        if (hostRef) mainNode.insertBefore(harnessNode, hostRef);
+        else mainNode.appendChild(harnessNode);
+      }
+      var hostNode = mainNode.querySelector(".cr-host");
       var statusNode = mainNode.nextSibling;
       var subText = agent.agent_error
         ? "⚠ " + (agent.agent_error.message || agent.agent_error.name)
         : agentWorkspaceSub(agent);
+      var harnessText = agentHarnessLabel(agent);
       var hostText = agent.host || "";
-      var hostNode = subNode.nextSibling;  // the .cr-host chip (always built)
       var pillCls = "cr-status" + (statusText ? " " + status : "");
       if (dotNode.className !== dotCls) dotNode.className = dotCls;
       if (nameNode.textContent !== name) nameNode.textContent = name;
       if (subNode.textContent !== subText) subNode.textContent = subText;
       subNode.classList.toggle("hidden", !subText);
-      if (hostNode.textContent !== hostText) hostNode.textContent = hostText;
-      hostNode.classList.toggle("hidden", !hostText);
+      if (harnessNode.textContent !== harnessText) harnessNode.textContent = harnessText;
+      harnessNode.setAttribute("data-harness", ((agent && agent.agent) || "").toLowerCase().trim());
+      harnessNode.classList.toggle("hidden", !harnessText);
+      if (hostNode && hostNode.textContent !== hostText) hostNode.textContent = hostText;
+      if (hostNode) hostNode.classList.toggle("hidden", !hostText);
       if (statusNode.className !== pillCls) statusNode.className = pillCls;
       if (statusNode.textContent !== statusText) statusNode.textContent = statusText;
       statusNode.classList.toggle("hidden", !statusText);
@@ -3316,9 +3361,21 @@
   function paintRunsInto(target, runs) {
     var fragment = document.createDocumentFragment();
     for (var l = 0; l < runs.length; l++) {
-      var line = runs[l] || [];
+      var rawLine = runs[l] || [];
+      // Clean trailing whitespace runs at the end of the line
+      var line = [];
+      for (var i = 0; i < rawLine.length; i++) {
+        var item = rawLine[i] || {};
+        line.push({ t: item.t || "", fg: item.fg, bg: item.bg, b: item.b, rev: item.rev });
+      }
+      for (var j = line.length - 1; j >= 0; j--) {
+        line[j].t = line[j].t.replace(/[ \t\r]+$/, "");
+        if (line[j].t.length > 0) break;
+        line.pop();
+      }
+
       for (var r = 0; r < line.length; r++) {
-        var run = line[r] || {};
+        var run = line[r];
         /* createElement + textContent: agent output can never inject markup. */
         var node = document.createElement("span");
         /* Foreground only. The terminal's own background belongs to the
@@ -4316,13 +4373,13 @@
 
   var AGENT_TABS = [
     { id: "agent", tab: tabAgent, panel: agentPanel },
-    { id: "screen", tab: tabScreen, panel: screenPanel },
-    { id: "history", tab: tabHistory, panel: historyPanel },
     { id: "terminal", tab: tabTerminal, panel: terminalPanel },
   ];
   var currentAgentTabId = "agent";
 
   function agentTabById(name) {
+    if (name === "screen") name = "terminal";
+    if (name === "history") name = "agent";
     for (var i = 0; i < AGENT_TABS.length; i++) {
       if (AGENT_TABS[i].id === name) return AGENT_TABS[i];
     }
@@ -4343,10 +4400,11 @@
   function selectAgentTab(name) {
     applyAgentTab(name);
     localStorage.setItem(TAB_KEY, currentAgentTabId);
-    /* Reading views load on entry: the first history page on open, an
-     * immediate mirror read (the 5s poll keeps them fresh afterwards). */
-    if (currentAgentTabId === "history") openHistoryTab();
-    if (currentAgentTabId === "terminal") refreshMirror();
+    /* Reading views load on entry: an immediate mirror read for terminal. */
+    if (currentAgentTabId === "terminal") {
+      firstMirrorPaint = true;
+      refreshMirror();
+    }
   }
 
   /* Roving tabindex: ArrowLeft/ArrowRight move the selection through
@@ -4361,14 +4419,58 @@
   }
 
   tabAgent.addEventListener("click", function () { selectAgentTab("agent"); });
-  tabScreen.addEventListener("click", function () { selectAgentTab("screen"); });
-  tabHistory.addEventListener("click", function () { selectAgentTab("history"); });
-  tabTerminal.addEventListener("click", function () { selectAgentTab("terminal"); });
+  if (tabTerminal) tabTerminal.addEventListener("click", function () { selectAgentTab("terminal"); });
   tabAgent.addEventListener("keydown", function (event) { agentTabKeydown(event, 0); });
-  tabScreen.addEventListener("keydown", function (event) { agentTabKeydown(event, 1); });
-  tabHistory.addEventListener("keydown", function (event) { agentTabKeydown(event, 2); });
-  tabTerminal.addEventListener("keydown", function (event) { agentTabKeydown(event, 3); });
+  if (tabTerminal) tabTerminal.addEventListener("keydown", function (event) { agentTabKeydown(event, 1); });
   applyAgentTab(agentTabById(localStorage.getItem(TAB_KEY)) ? localStorage.getItem(TAB_KEY) : "agent");
+
+  function toggleHistoryFind(force) {
+    if (!historyFindBar) return;
+    var isHidden = historyFindBar.classList.contains("hidden");
+    var show = typeof force === "boolean" ? force : isHidden;
+    historyFindBar.classList.toggle("hidden", !show);
+    localStorage.setItem("herdr-brain-search-open", show ? "true" : "false");
+    if (show && historyFind) historyFind.focus();
+  }
+  if (historyFindToggle) historyFindToggle.addEventListener("click", function () { toggleHistoryFind(); });
+  if (historyFindClose) historyFindClose.addEventListener("click", function () { toggleHistoryFind(false); });
+  if (localStorage.getItem("herdr-brain-search-open") === "true") {
+    toggleHistoryFind(true);
+  }
+
+  /* Cockpit fullscreen mode (reading without UI chrome) */
+  var cockpitFullscreen = false;
+
+  function setCockpitFullscreen(active) {
+    cockpitFullscreen = !!active;
+    document.body.classList.toggle("cockpit-fullscreen", cockpitFullscreen);
+    if (cockpitFsToggle) {
+      cockpitFsToggle.classList.toggle("active", cockpitFullscreen);
+      cockpitFsToggle.setAttribute("aria-pressed", cockpitFullscreen ? "true" : "false");
+    }
+    if (cockpitFullscreen) {
+      if (document.documentElement.requestFullscreen && !document.fullscreenElement) {
+        document.documentElement.requestFullscreen().catch(function () {});
+      }
+    } else {
+      if (document.exitFullscreen && document.fullscreenElement) {
+        document.exitFullscreen().catch(function () {});
+      }
+    }
+  }
+
+  function toggleCockpitFullscreen() {
+    setCockpitFullscreen(!cockpitFullscreen);
+  }
+
+  if (cockpitFsToggle) cockpitFsToggle.addEventListener("click", toggleCockpitFullscreen);
+  if (cockpitFsExit) cockpitFsExit.addEventListener("click", function () { setCockpitFullscreen(false); });
+
+  document.addEventListener("fullscreenchange", function () {
+    if (!document.fullscreenElement && cockpitFullscreen) {
+      setCockpitFullscreen(false);
+    }
+  });
 
   /* ---------------- Historial tab: full transcript by cursor (doc 05) -
    * The pagination state machine is the pure HistoryView module
@@ -4401,6 +4503,8 @@
   }
 
   function openHistoryTab() {
+    toggleHistoryFind(true);
+    if (historyTurns) historyTurns.classList.remove("hidden");
     if (historyModel) loadHistoryFirstPage();
   }
 
@@ -4412,12 +4516,12 @@
     historySeq++;
     historyModel.reset();
     historyTurns.textContent = "";
+    historyTurns.classList.add("hidden");
     historyRenderStart = 0;
     historyJumpTop = null;
     historyMore.classList.add("hidden");
     if (historyFind) historyFind.value = "";
     updateHistoryFind(false);
-    if (currentAgentTabId === "history") loadHistoryFirstPage();
   }
 
   function historyFollowPane() {
@@ -4553,7 +4657,9 @@
     revealHistoryThrough(Math.max(0, historyRenderStart - HistoryView.HISTORY_PAGE_LIMIT));
     historyTurns.scrollTop = historyTurns.scrollHeight;
     updateHistoryFind(true);
-    var empty = !result.turns.length;
+    var hasTurns = !!(result.turns && result.turns.length);
+    historyTurns.classList.toggle("hidden", !hasTurns);
+    var empty = !result.turns.length && (!glanceTurns || !glanceTurns.children.length);
     historyEmpty.classList.toggle("hidden", !empty);
     paintHistoryPager();
     if (empty) historyEmpty.textContent = t("history.empty");
@@ -4659,6 +4765,7 @@
    * terminal emulation here, the pane already did it. */
 
   var lastMirrorSignature = null;
+  var firstMirrorPaint = true;
 
   function mirrorTabVisible() {
     return !!(terminalPanel && !terminalPanel.classList.contains("hidden") &&
@@ -4686,9 +4793,14 @@
         var signature = JSON.stringify(runs);
         if (signature !== lastMirrorSignature) {
           lastMirrorSignature = signature;
+          var wasAtBottom = mirrorScreen ? (mirrorScreen.scrollHeight - mirrorScreen.scrollTop - mirrorScreen.clientHeight < 50) : false;
           if (runs.length) {
             paintRunsInto(mirrorScreen, runs);
             mirrorWrap.classList.remove("hidden");
+            if (wasAtBottom || firstMirrorPaint) {
+              mirrorScreen.scrollTop = mirrorScreen.scrollHeight;
+              firstMirrorPaint = false;
+            }
           } else {
             mirrorScreen.textContent = "";
             mirrorWrap.classList.add("hidden");
@@ -4699,9 +4811,35 @@
       .catch(function () { /* the next poll beat retries */ });
   }
 
+  var termNowrap = localStorage.getItem("herdr-brain-terminal-nowrap") === "true";
+
+  function applyTerminalWrap(nowrap) {
+    termNowrap = !!nowrap;
+    if (mirrorScreen) mirrorScreen.classList.toggle("nowrap", termNowrap);
+    if (termWrapToggle) {
+      termWrapToggle.textContent = termNowrap ? "⇄ nowrap" : "↩ wrap";
+      termWrapToggle.classList.toggle("active", termNowrap);
+    }
+    localStorage.setItem("herdr-brain-terminal-nowrap", termNowrap ? "true" : "false");
+  }
+
+  if (termWrapToggle) {
+    termWrapToggle.addEventListener("click", function () {
+      applyTerminalWrap(!termNowrap);
+    });
+  }
+  if (termScrollBottom) {
+    termScrollBottom.addEventListener("click", function () {
+      if (mirrorScreen) {
+        mirrorScreen.scrollTo({ top: mirrorScreen.scrollHeight, behavior: "smooth" });
+      }
+    });
+  }
+  applyTerminalWrap(termNowrap);
+
   /* A reload that lands on a reading tab starts its read immediately —
    * the same first page / first mirror the tap would have asked for. */
-  if (currentAgentTabId === "history") openHistoryTab();
+  window.openHistoryTab = openHistoryTab;
   if (currentAgentTabId === "terminal") refreshMirror();
 
 
@@ -5748,7 +5886,9 @@
   }
 
   function renderMute() {
-    muteBtn.textContent = muted() ? "🔇" : "🔊";
+    var activeLabel = window.I18N && typeof window.I18N.t === "function" ? window.I18N.t("settings.mute_active") : "🔊 Activo";
+    var mutedLabel = window.I18N && typeof window.I18N.t === "function" ? window.I18N.t("settings.mute_muted") : "🔇 Silenciado";
+    muteBtn.textContent = muted() ? mutedLabel : activeLabel;
     muteBtn.classList.toggle("muted", muted());
   }
 
@@ -10026,6 +10166,7 @@
     I18N.subscribe(function () {
       applyTheme(resolve(themeMode, systemPrefersDark()), themeMode);
       renderVoiceEngine();
+      renderMute();
       renderPending(lastView);
       renderPill();
       paintStopIdle();

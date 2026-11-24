@@ -42,36 +42,36 @@ def _load(karaoke_app):
 def test_agent_view_opens_on_the_agent_tab(karaoke_app):
     page = _load(karaoke_app).page
     expect(page.locator("#tab-agent")).to_have_attribute("aria-selected", "true")
-    expect(page.locator("#tab-screen")).to_have_attribute("aria-selected", "false")
+    expect(page.locator("#tab-terminal")).to_have_attribute("aria-selected", "false")
     expect(page.locator("#agent-panel")).to_be_visible()
     expect(page.locator("#glance-turns .gturn")).to_have_count(2)
-    expect(page.locator("#screen-panel")).to_be_hidden()
+    expect(page.locator("#terminal-panel")).to_be_hidden()
 
 
 def test_the_screen_tab_swaps_the_body(karaoke_app):
     page = _load(karaoke_app).page
 
-    page.locator("#tab-screen").click()
-    expect(page.locator("#tab-screen")).to_have_attribute("aria-selected", "true")
-    expect(page.locator("#screen-panel")).to_be_visible()
-    expect(page.locator("#view-screen")).to_have_text(SCREEN_TEXT)
+    page.locator("#tab-terminal").click()
+    expect(page.locator("#tab-terminal")).to_have_attribute("aria-selected", "true")
+    expect(page.locator("#terminal-panel")).to_be_visible()
+    expect(page.locator("#mirror-screen")).to_have_text(SCREEN_TEXT)
     expect(page.locator("#agent-panel")).to_be_hidden()
     expect(page.locator("#glance-turns")).to_be_hidden()
 
     page.locator("#tab-agent").click()
     expect(page.locator("#agent-panel")).to_be_visible()
     expect(page.locator("#glance-turns .gturn")).to_have_count(2)
-    expect(page.locator("#screen-panel")).to_be_hidden()
+    expect(page.locator("#terminal-panel")).to_be_hidden()
 
 
 def test_arrow_keys_move_between_the_tabs(karaoke_app):
     page = _load(karaoke_app).page
 
     page.locator("#tab-agent").press("ArrowRight")
-    expect(page.locator("#tab-screen")).to_have_attribute("aria-selected", "true")
-    expect(page.locator("#screen-panel")).to_be_visible()
+    expect(page.locator("#tab-terminal")).to_have_attribute("aria-selected", "true")
+    expect(page.locator("#terminal-panel")).to_be_visible()
 
-    page.locator("#tab-screen").press("ArrowLeft")
+    page.locator("#tab-terminal").press("ArrowLeft")
     expect(page.locator("#tab-agent")).to_have_attribute("aria-selected", "true")
     expect(page.locator("#agent-panel")).to_be_visible()
 
@@ -79,12 +79,12 @@ def test_arrow_keys_move_between_the_tabs(karaoke_app):
 def test_a_stored_tab_choice_is_honored_on_load(karaoke_app):
     harness = karaoke_app()
     harness.context.add_init_script(
-        "localStorage.setItem('herdr-brain-agent-tab', 'screen');")
+        "localStorage.setItem('herdr-brain-agent-tab', 'terminal');")
     harness.respond("/view", VIEW_WITH_SCREEN, query=("pane_id",))
     harness.respond("/conversation", TURNS, query=("pane_id",))
 
     page = harness.load().page
-    expect(page.locator("#screen-panel")).to_be_visible()
+    expect(page.locator("#terminal-panel")).to_be_visible()
     expect(page.locator("#agent-panel")).to_be_hidden()
 
 
@@ -108,17 +108,17 @@ def test_styled_screen_runs_reach_the_screen_without_letting_markup_through(kara
     harness.respond("/conversation", TURNS, query=("pane_id",))
 
     page = harness.load().page
-    page.locator("#tab-screen").click()
+    page.locator("#tab-terminal").click()
 
-    expect(page.locator("#view-screen")).to_have_text("Allow once <b>Allow always</b>")
+    expect(page.locator("#mirror-screen")).to_have_text("Allow once <b>Allow always</b>")
     first = page.evaluate(
-        "() => { const s = document.querySelector('#view-screen span');"
+        "() => { const s = document.querySelector('#mirror-screen span');"
         " return [s.style.background, s.textContent]; }"
     )
     # Foreground only: the terminal's own background is NOT painted, because
     # doing so produced a black box with black text on our dark theme.
     assert first == ["", "Allow once"]
-    assert page.evaluate("() => document.querySelectorAll('#view-screen b').length") == 0
+    assert page.evaluate("() => document.querySelectorAll('#mirror-screen b').length") == 0
 
 
 @pytest.mark.parametrize("viewport", [

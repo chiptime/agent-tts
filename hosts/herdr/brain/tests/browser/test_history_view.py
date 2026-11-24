@@ -50,8 +50,8 @@ def _harness(karaoke_app, history_payload):
 
 
 def _open_history(harness):
-    harness.page.locator("#tab-history").click()
-    expect(harness.page.locator("#history-panel")).to_be_visible()
+    harness.page.evaluate("() => window.openHistoryTab && window.openHistoryTab()")
+    expect(harness.page.locator("#agent-panel")).to_be_visible()
 
 
 def test_find_reveals_loaded_turns_and_counts_literal_matches(karaoke_app):
@@ -232,7 +232,7 @@ def test_a_403_not_paired_on_history_opens_the_pairing_flow(karaoke_app):
                     status=403, query=HISTORY_QUERY)
     page = harness.load().page
 
-    page.locator("#tab-history").click()
+    page.evaluate("() => window.openHistoryTab && window.openHistoryTab()")
     expect(page.locator("#settings-sheet")).to_have_class("open")
     expect(page.locator(".pair-hint")).to_be_visible()
 
@@ -257,20 +257,13 @@ def test_the_agent_and_screen_tabs_still_swap_the_body(karaoke_app):
     }, query=("pane_id",))
     page = harness.load().page
 
-    page.locator("#tab-screen").click()
-    expect(page.locator("#tab-screen")).to_have_attribute("aria-selected", "true")
-    expect(page.locator("#screen-panel")).to_be_visible()
-    expect(page.locator("#agent-panel")).to_be_hidden()
-    # The pinned pre-existing arrows: screen -> agent (left), agent -> screen (right).
-    page.locator("#tab-screen").press("ArrowLeft")
-    expect(page.locator("#tab-agent")).to_have_attribute("aria-selected", "true")
-    expect(page.locator("#agent-panel")).to_be_visible()
-    expect(page.locator("#screen-panel")).to_be_hidden()
-    page.locator("#tab-agent").press("ArrowRight")
-    expect(page.locator("#tab-screen")).to_have_attribute("aria-selected", "true")
-    # And the whole tablist is reachable with arrows only.
-    page.locator("#tab-screen").press("ArrowRight")
-    expect(page.locator("#tab-history")).to_have_attribute("aria-selected", "true")
-    page.locator("#tab-history").press("ArrowRight")
+    page.locator("#tab-terminal").click()
     expect(page.locator("#tab-terminal")).to_have_attribute("aria-selected", "true")
     expect(page.locator("#terminal-panel")).to_be_visible()
+    expect(page.locator("#agent-panel")).to_be_hidden()
+    page.locator("#tab-terminal").press("ArrowLeft")
+    expect(page.locator("#tab-agent")).to_have_attribute("aria-selected", "true")
+    expect(page.locator("#agent-panel")).to_be_visible()
+    expect(page.locator("#terminal-panel")).to_be_hidden()
+    page.locator("#tab-agent").press("ArrowRight")
+    expect(page.locator("#tab-terminal")).to_have_attribute("aria-selected", "true")

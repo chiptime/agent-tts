@@ -518,6 +518,30 @@
       overflow: hidden;
       text-overflow: ellipsis;
     }
+    .cr-harness {
+      align-self: flex-start;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.4px;
+      text-transform: uppercase;
+      padding: 1px 5px;
+      border-radius: 4px;
+      border: 1px solid var(--line);
+      background: var(--chip-bg);
+      color: var(--muted);
+      line-height: 1.3;
+      margin-top: 1px;
+    }
+    .cr-harness[data-harness="agy"],
+    .cr-harness[data-harness="antigravity"] {
+      color: var(--blue);
+      border-color: var(--blue);
+    }
+    .cr-harness[data-harness="opencode"],
+    .cr-harness[data-harness="opencode2"] {
+      color: var(--accent);
+      border-color: var(--accent);
+    }
     .cr-status {
       flex: 0 0 auto;
       padding: 3px 8px;
@@ -611,7 +635,12 @@
       filter: saturate(0.5);
     }
     /* Direct reply to the agent that is waiting (POST /pane/reply). */
-    #pane-reply { display: flex; gap: 8px; padding: var(--sp-2) var(--sp-3); }
+    #pane-reply {
+      display: flex;
+      gap: 8px;
+      padding: var(--sp-2) var(--sp-3);
+      align-items: center;
+    }
     #pane-reply.hidden { display: none; }
     #pane-reply input {
       flex: 1;
@@ -624,8 +653,19 @@
       background: var(--bg);
       color: var(--text);
     }
-    #pane-reply button { padding: 10px 16px; font-weight: 600; background: var(--chip-bg); color: var(--text); }
+    #pane-reply button {
+      padding: 10px 16px;
+      font-weight: 600;
+      background: var(--chip-bg);
+      color: var(--text);
+      white-space: nowrap;
+    }
     #pane-reply button:disabled { opacity: 0.55; }
+    #pane-reply button[type="submit"] {
+      background: var(--accent);
+      color: #ffffff;
+      font-weight: 700;
+    }
     /* Verified send (S12): the receipt card tells what the terminal did.
      * Text nodes only — the label and detail are never markup. The
      * Submit/Discard pair appears ONLY for a typed_not_submitted draft. */
@@ -696,49 +736,34 @@
     #pane-track.terminal { border-color: var(--accent); }
     #pane-track .track-dismiss.hidden { display: none; }
     /* Stop (S12): double-tap arming — the first tap arms (the button says
-     * so), only the second tap inside the window sends the interrupt. */
+     * so), only the second tap inside the window sends the interrupt. Inline in composer. */
     #pane-stop {
-      margin: 0 10px var(--sp-2);
+      flex: 0 0 auto;
       min-height: 44px;
-      width: calc(100% - 20px);
+      padding: 0 12px;
       border: 1px solid var(--line);
       border-radius: 10px;
-      background: var(--bg);
-      color: var(--text);
+      background: var(--chip-bg);
+      color: var(--danger);
       font: inherit;
       font-weight: 600;
+      white-space: nowrap;
+      cursor: pointer;
+      transition: background-color 0.15s, border-color 0.15s, color 0.15s;
     }
     #pane-stop.hidden { display: none; }
-    #pane-stop.armed { border-color: #ff8f6b; color: #ff8f6b; }
-    /* Brain message (S13): the operator's small composer, hidden until
-     * ✉ Mensaje opens it. Same visual language as the reply composer. */
-    #pane-msg {
-      margin: 0 10px var(--sp-2);
-      min-height: 44px;
-      width: calc(100% - 20px);
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      background: var(--bg);
-      color: var(--text);
-      font: inherit;
-      font-weight: 600;
+    #pane-stop.armed {
+      background: #7a2828;
+      border-color: #b91c1c;
+      color: #fecaca;
+      font-weight: 800;
     }
-    #pane-msg.hidden { display: none; }
-    #pane-msg-form { display: flex; gap: 8px; margin: 0 10px var(--sp-2); }
-    #pane-msg-form.hidden { display: none; }
-    #pane-msg-form input {
-      flex: 1;
-      min-width: 0;
-      font: inherit;
-      min-height: 44px;
-      padding: var(--sp-2) var(--sp-3);
-      border-radius: 10px;
-      border: 1px solid var(--line);
-      background: var(--bg);
-      color: var(--text);
+    #pane-stop:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      color: var(--muted);
+      border-color: var(--line);
     }
-    #pane-msg-form button { padding: 10px 16px; font-weight: 600; background: var(--chip-bg); color: var(--text); }
-    #pane-msg-form button:disabled { opacity: 0.55; }
     /* Shown instead of the input when the agent waits at a dialog: herdr
      * refuses a TEXT prompt to a blocked agent (agent_blocked, before any
      * input is written), so its dialog is answered with KEYS (POST
@@ -1070,25 +1095,60 @@
      * a time. Same column language as the glance list; turns arrive
      * unclipped (reading surface), older pages prepend under what is
      * held and the pager stays pinned at the panel's bottom. */
+    .tab-actions {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      margin-left: auto;
+    }
+    .tab-tool-btn, .tab-search-btn {
+      flex: 0 0 auto;
+      padding: 0 10px;
+      min-height: 32px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 13px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+    }
+    .tab-tool-btn:hover, .tab-tool-btn:focus-visible,
+    .tab-search-btn:hover, .tab-search-btn:focus-visible {
+      color: var(--text);
+      border-color: var(--text);
+      background: var(--chip-bg);
+    }
+    .tab-tool-btn.active {
+      color: var(--accent);
+      border-color: var(--accent);
+      background: var(--chip-bg);
+    }
     .history-find-bar {
       display: flex;
       align-items: center;
       gap: 6px;
-      flex-wrap: wrap;
-      padding: 6px 10px;
-    }
-    .history-find-bar input, .history-find-bar button {
-      min-height: 44px;
       padding: 4px 8px;
+      background: var(--chip-bg);
+      border-bottom: 1px solid var(--line);
+    }
+    .history-find-bar.hidden { display: none !important; }
+    .history-find-bar input, .history-find-bar button {
+      height: 32px;
+      padding: 2px 8px;
       color: var(--text);
       background: var(--panel);
       border: 1px solid var(--line);
-      border-radius: 8px;
+      border-radius: 6px;
+      font-size: var(--fs-xs);
     }
-    .history-find-bar input { flex: 1 1 10em; min-width: 0; font-size: 16px; }
-    .history-find-bar button { min-width: 44px; }
-    .history-find-bar button:disabled { opacity: 0.45; }
-    #history-find-count { font-size: var(--fs-sm); }
+    .history-find-bar input { flex: 1 1 auto; min-width: 0; }
+    .history-find-bar button { min-width: 32px; cursor: pointer; }
+    .history-find-bar button:disabled { opacity: 0.45; cursor: default; }
+    #history-find-count { font-size: var(--fs-xs); color: var(--muted); white-space: nowrap; }
     .ht-text mark { color: #211b09; background: #ffe299; }
     .ht-text mark.current { background: #ffbd52; outline: 2px solid currentColor; }
     #history-turns {
@@ -1101,6 +1161,7 @@
       gap: 8px;
       padding: 6px 10px;
     }
+    #history-turns.hidden { display: none !important; }
     .hturn {
       flex: 0 0 auto;
       background: var(--chip-bg);
@@ -1645,7 +1706,67 @@
       flex: 1;
       min-height: 0;
       position: relative;
-      padding: 0 12px 10px;
+      display: flex;
+      flex-direction: column;
+      padding: 0 10px 10px;
+    }
+    .terminal-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 2px 2px 6px;
+    }
+    .terminal-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      letter-spacing: 0.8px;
+      text-transform: uppercase;
+      font-weight: 700;
+      color: var(--muted);
+    }
+    .terminal-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 6px var(--accent);
+      display: inline-block;
+      animation: pulse-dot 2s infinite ease-in-out;
+    }
+    @keyframes pulse-dot {
+      0%, 100% { opacity: 0.6; transform: scale(0.9); }
+      50% { opacity: 1; transform: scale(1.1); }
+    }
+    .terminal-tools {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .term-tool-btn {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 2px 8px;
+      min-height: 24px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel);
+      color: var(--muted);
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      transition: color 0.15s, border-color 0.15s;
+    }
+    .term-tool-btn:hover {
+      color: var(--text);
+      border-color: var(--text);
+    }
+    .term-tool-btn.active {
+      color: var(--accent);
+      border-color: var(--accent);
+      background: var(--chip-bg);
     }
     .glabel {
       display: block;
@@ -1655,28 +1776,52 @@
       color: var(--muted);
       margin: 2px 2px 4px;
     }
-    /* Terminal preview: real scroll + fade mask on the top edge. */
-    .gscreen-wrap::after {
-      content: "";
-      position: absolute;
-      left: 12px; right: 12px; top: 20px;
-      height: 14px;
-      background: linear-gradient(var(--panel), rgba(0, 0, 0, 0));
-      pointer-events: none;
-    }
     .view-screen {
       margin: 0;
-      padding: 8px 10px;
-      background: var(--terminal-bg);
-      border-radius: 8px;
-      color: var(--muted);
-      font: var(--fs-xs)/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+      padding: 10px 12px;
+      background: #0c1017;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      color: #d1d7e0;
+      font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: var(--fs-xs);
+      line-height: 1.42;
+      letter-spacing: -0.2px;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
       white-space: pre-wrap;
       word-break: break-word;
       flex: 1;
       min-height: 0;
       overflow-y: auto;
+      overflow-x: auto;
       overscroll-behavior: contain;
+      box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.4);
+    }
+    .view-screen.nowrap {
+      white-space: pre !important;
+      word-break: normal !important;
+    }
+    .view-screen::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    .view-screen::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    .view-screen::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.16);
+      border-radius: 3px;
+    }
+    .view-screen::-webkit-scrollbar-thumb:hover {
+      background: rgba(255, 255, 255, 0.32);
+    }
+    #mirror-empty {
+      padding: 24px var(--sp-3);
+      font-size: var(--fs-sm);
+      color: var(--muted);
+      font-style: italic;
+      text-align: center;
     }
 
     /* ── CONSULT PANEL (T10: Consulting state + on-screen references;
@@ -2047,7 +2192,7 @@
       font-variant-numeric: tabular-nums;
       flex: 0 0 auto;
     }
-    #voice-engine-btn, #theme-btn {
+    #voice-engine-btn, #theme-btn, #mute-btn {
       flex: 0 0 auto;
       min-height: 44px;
       padding: 4px 12px;
@@ -2059,7 +2204,11 @@
       border-radius: 999px;
       white-space: nowrap;
     }
-    #voice-engine-btn:active, #theme-btn:active { transform: scale(0.96); }
+    #voice-engine-btn:active, #theme-btn:active, #mute-btn:active { transform: scale(0.96); }
+    #mute-btn.muted {
+      color: var(--muted);
+      opacity: 0.65;
+    }
     /* Ajustes → Pendientes launcher (pending-notices-in-settings-sheet):
      * same pill button language as the engine toggle; the pending count
      * rides inside the label. */
@@ -2708,6 +2857,15 @@
       border-bottom: 1px solid var(--line);
     }
     .s-title { flex: 1; font-size: 14px; font-weight: 700; }
+    .s-head #header-version {
+      font-size: 11px;
+      padding: 3px 8px;
+      color: var(--muted);
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--chip-bg);
+      font-weight: 600;
+    }
     #settings-close {
       min-width: 44px; min-height: 44px;
       border: 1px solid var(--line); border-radius: 10px;
@@ -2791,7 +2949,7 @@
       position: fixed;
       top: max(8px, env(safe-area-inset-top, 8px));
       right: max(8px, env(safe-area-inset-right, 8px));
-      z-index: 50;
+      z-index: 10;
       padding: 6px 12px;
       min-height: 36px;
       background: var(--chip-bg);
@@ -2810,6 +2968,95 @@
       border-color: var(--text);
     }
     body.zen #zen-exit-btn:active {
+      transform: scale(0.97);
+    }
+    /* ── COCKPIT FULLSCREEN READING MODE ── */
+    #cockpit-fullscreen-exit {
+      display: none;
+    }
+    body.cockpit-fullscreen header,
+    body.cockpit-fullscreen footer,
+    body.cockpit-fullscreen #agent-tabs,
+    body.cockpit-fullscreen #operator-dock,
+    body.cockpit-fullscreen #herd-note,
+    body.cockpit-fullscreen #version-footer,
+    body.cockpit-fullscreen #pane-reply,
+    body.cockpit-fullscreen #pane-receipt,
+    body.cockpit-fullscreen #pane-keys,
+    body.cockpit-fullscreen #pane-permission,
+    body.cockpit-fullscreen #hook-permission,
+    body.cockpit-fullscreen #state-pill {
+      display: none !important;
+    }
+    body.cockpit-fullscreen #agent-view {
+      position: fixed !important;
+      inset: 0 !important;
+      z-index: 99 !important;
+      width: 100vw !important;
+      height: 100vh !important;
+      height: 100dvh !important;
+      max-width: 100vw !important;
+      border: none !important;
+      border-radius: 0 !important;
+      margin: 0 !important;
+      padding: 0 !important;
+      background: var(--bg) !important;
+      display: flex !important;
+      flex-direction: column !important;
+    }
+    body.cockpit-fullscreen #agent-panel,
+    body.cockpit-fullscreen #terminal-panel {
+      height: 100% !important;
+      flex: 1 !important;
+    }
+    body.cockpit-fullscreen #glance-turns {
+      padding: max(16px, env(safe-area-inset-top, 16px)) max(18px, env(safe-area-inset-right, 18px)) max(16px, env(safe-area-inset-bottom, 16px)) max(18px, env(safe-area-inset-left, 18px)) !important;
+    }
+    body.cockpit-fullscreen .gturn {
+      max-width: 860px;
+      margin-left: auto;
+      margin-right: auto;
+      width: 100%;
+    }
+    body.cockpit-fullscreen .gscreen-wrap {
+      height: 100% !important;
+      flex: 1 !important;
+    }
+    body.cockpit-fullscreen .view-screen {
+      height: 100% !important;
+      max-height: none !important;
+      flex: 1 !important;
+    }
+    body.cockpit-fullscreen #cockpit-fullscreen-exit {
+      display: inline-flex !important;
+      align-items: center;
+      gap: 6px;
+      position: fixed;
+      top: max(10px, env(safe-area-inset-top, 10px));
+      right: max(12px, env(safe-area-inset-right, 12px));
+      z-index: 1000;
+      padding: 6px 14px;
+      min-height: 36px;
+      background: rgba(22, 27, 34, 0.85);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      color: var(--text);
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      font-size: var(--fs-xs);
+      font-weight: 700;
+      cursor: pointer;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+      opacity: 0.85;
+      transition: opacity 0.15s ease, transform 0.1s ease, border-color 0.15s ease;
+    }
+    body.cockpit-fullscreen #cockpit-fullscreen-exit:hover,
+    body.cockpit-fullscreen #cockpit-fullscreen-exit:focus-visible {
+      opacity: 1;
+      border-color: var(--accent);
+      transform: scale(1.02);
+    }
+    body.cockpit-fullscreen #cockpit-fullscreen-exit:active {
       transform: scale(0.97);
     }
     #operator-dock {
@@ -2838,9 +3085,7 @@
   <header>
     <span id="status-chip" class="chip">…</span>
     <button id="pane-picker" type="button" aria-haspopup="dialog" aria-expanded="false" title="Cambiar de conversación" data-i18n-title="header.pane_picker_title"><span class="pp-caret" aria-hidden="true">▾</span><span id="pane-picker-label" data-i18n="header.connecting">conectando…</span><span id="pane-picker-sub" class="hidden"></span></button>
-    <span id="header-version" class="chip">v<span id="app-version-header">?</span></span>
     <button id="settings-btn" class="head-btn" title="Ajustes" data-i18n-title="header.settings_title">⚙</button>
-    <button id="mute-btn" class="head-btn" title="Silenciar anuncios" data-i18n-title="header.mute_title">🔊</button>
   </header>
   <button id="zen-exit-btn" type="button" title="Salir del Modo Zen" data-i18n="settings.zen_exit" data-i18n-title="settings.zen_exit_title">✕ Salir Zen</button>
   <div id="toast" class="hidden"></div>
@@ -2862,6 +3107,9 @@
     <div id="pending-banner" class="pending hidden"></div>
     <form id="pane-reply" class="hidden">
       <input id="pane-reply-input" type="text" placeholder="Responde al agente…" autocomplete="off" aria-label="Respuesta al agente" data-i18n-placeholder="reply.placeholder" data-i18n-aria-label="reply.aria">
+      <!-- Stop (S12): interrupt the running turn. Contextual in composer. Double-tap arming:
+           the first tap arms for ~3 s, the second sends POST /pane/stop. -->
+      <button id="pane-stop" class="hidden" type="button" data-i18n="call.stop">■ Detener</button>
       <button id="pane-reply-send" type="submit" data-i18n="common.send">Enviar</button>
     </form>
     <!-- Verified send receipt (S12): what the terminal actually did with
@@ -2886,22 +3134,10 @@
       <span id="pane-track-elapsed" class="track-elapsed" aria-hidden="true"></span>
       <button id="pane-track-dismiss" type="button" class="track-dismiss hidden" aria-label="Cerrar" data-i18n-aria-label="track.dismiss">✕</button>
     </div>
-    <!-- Stop (S12): interrupt the running turn. Double-tap arming: the
-         first tap arms for ~3 s, the second sends POST /pane/stop. -->
-    <button id="pane-stop" class="hidden" type="button" data-i18n="call.stop">■ Detener</button>
     <!-- Operator dock (S3): quick replies / commands / key presets /
          launchers from the operator's TOML, rendered by dock.js. Text
          nodes only — an operator label is data, never markup. -->
     <div id="operator-dock" class="hidden"></div>
-    <!-- Brain message to this pane (S13): opens the small operator
-         composer below; it sends through POST /msg/send addressed to
-         pane#session, held until the receiver is idle. Text nodes only. -->
-    <button id="pane-msg" class="hidden" type="button" data-i18n="msg.button">✉ Mensaje</button>
-    <form id="pane-msg-form" class="hidden">
-      <input id="pane-msg-input" type="text" placeholder="Mensaje para el agente…" autocomplete="off" aria-label="Mensaje de operador al agente" data-i18n-placeholder="msg.placeholder" data-i18n-aria-label="msg.aria">
-      <button id="pane-msg-send" type="submit" data-i18n="common.send">Enviar</button>
-      <button id="pane-msg-cancel" type="button" data-i18n="common.cancel">Cancelar</button>
-    </form>
     <div id="pane-reply-keys" class="hidden">
       <span id="pane-keys-hint" data-i18n="keys.hint">El agente espera — respóndele con teclas:</span>
       <div id="dialog-buttons" class="dialog-buttons hidden" role="group" aria-label="Opciones del diálogo" data-i18n-aria-label="dialogs.group_aria"></div>
@@ -2947,40 +3183,40 @@
         <button id="hp-deny" type="button" data-i18n="holdpermission.deny">Denegar</button>
       </div>
     </div>
+    <button id="cockpit-fullscreen-exit" type="button" class="cockpit-fullscreen-exit hidden" title="Salir de pantalla completa" data-i18n="tabs.exit_fullscreen" data-i18n-title="tabs.exit_fullscreen_title">✕ Salir</button>
     <div id="agent-tabs" class="agent-tabs" role="tablist" aria-label="Vistas del agente" data-i18n-aria-label="tabs.aria">
       <button id="tab-agent" class="agent-tab" type="button" role="tab" aria-selected="true" aria-controls="agent-panel" tabindex="0"><span id="glance-label" data-i18n="tabs.agent">Vista del agente</span></button>
-      <button id="tab-screen" class="agent-tab" type="button" role="tab" aria-selected="false" aria-controls="screen-panel" tabindex="-1" data-i18n="tabs.screen">Pantalla</button>
-      <button id="tab-history" class="agent-tab" type="button" role="tab" aria-selected="false" aria-controls="history-panel" tabindex="-1" data-i18n="tabs.history">Historial</button>
       <button id="tab-terminal" class="agent-tab" type="button" role="tab" aria-selected="false" aria-controls="terminal-panel" tabindex="-1" data-i18n="tabs.terminal">Terminal</button>
+      <div class="tab-actions">
+        <button id="history-find-toggle" type="button" class="tab-tool-btn tab-search-btn" title="Buscar en la conversación" aria-label="Buscar en la conversación" data-i18n-title="history.find" data-i18n-aria-label="history.find">🔍</button>
+        <button id="cockpit-fullscreen-toggle" type="button" class="tab-tool-btn tab-fullscreen-btn" title="Pantalla completa" aria-label="Pantalla completa" data-i18n-title="tabs.fullscreen" data-i18n-aria-label="tabs.fullscreen">⛶</button>
+      </div>
     </div>
     <div id="agent-panel" class="agent-panel" role="tabpanel" aria-labelledby="tab-agent" tabindex="0">
-      <div id="glance-turns"></div>
-      <div id="glance-empty" class="hidden" data-i18n="glance.empty">Sin conversación del agente todavía</div>
-    </div>
-    <div id="screen-panel" class="agent-panel hidden" role="tabpanel" aria-labelledby="tab-screen" tabindex="0">
-      <div class="gscreen-wrap hidden">
-        <span class="glabel" data-i18n="panel.screen">pantalla</span>
-        <pre id="view-screen" class="view-screen"></pre>
-      </div>    </div>
-    <!-- Historial (doc 05): the pane's FULL transcript, one cursor page
-         at a time; "Cargar más" (and a scroll parked at the very top)
-         walk older pages, prepended without duplicates. -->
-    <div id="history-panel" class="agent-panel hidden" role="tabpanel" aria-labelledby="tab-history" tabindex="0">
-      <div class="history-find-bar" role="search" aria-label="Buscar en el historial cargado" data-i18n-aria-label="history.find">
-        <input id="history-find" type="search" aria-label="Buscar en el historial cargado" data-i18n-aria-label="history.find" placeholder="Buscar en el historial cargado" data-i18n-placeholder="history.find" autocomplete="off">
+      <div class="history-find-bar hidden" role="search" aria-label="Buscar en la conversación" data-i18n-aria-label="history.find">
+        <input id="history-find" type="search" aria-label="Buscar en la conversación" data-i18n-aria-label="history.find" placeholder="Buscar en la conversación" data-i18n-placeholder="history.find" autocomplete="off">
         <span id="history-find-count" role="status" aria-atomic="true"></span>
         <button id="history-find-prev" type="button" aria-label="Coincidencia anterior" data-i18n-aria-label="history.find_prev" disabled>↑</button>
         <button id="history-find-next" type="button" aria-label="Coincidencia siguiente" data-i18n-aria-label="history.find_next" disabled>↓</button>
+        <button id="history-find-close" type="button" aria-label="Cerrar búsqueda">✕</button>
       </div>
-      <div id="history-turns" aria-label="Historial completo del agente" data-i18n-aria-label="history.aria"></div>
       <button id="history-more" class="hidden" type="button" data-i18n="history.more">Cargar más</button>
+      <div id="history-turns" class="hidden" aria-label="Historial completo del agente" data-i18n-aria-label="history.aria"></div>
+      <div id="glance-turns"></div>
+      <div id="glance-empty" class="hidden" data-i18n="glance.empty">Sin conversación del agente todavía</div>
       <div id="history-empty" class="hidden" data-i18n="history.empty">Sin historial de este agente todavía</div>
     </div>
     <!-- Terminal (doc 05): the LIVE pane mirror — the visible window as
          ANSI runs, repainted on the 5s poll while this tab is shown. -->
     <div id="terminal-panel" class="agent-panel hidden" role="tabpanel" aria-labelledby="tab-terminal" tabindex="0">
       <div class="gscreen-wrap hidden" id="mirror-wrap">
-        <span class="glabel" data-i18n="panel.terminal">terminal en vivo</span>
+        <div class="terminal-toolbar">
+          <span class="terminal-badge"><span class="terminal-dot"></span><span class="glabel" data-i18n="panel.terminal">terminal en vivo</span></span>
+          <div class="terminal-tools">
+            <button id="terminal-wrap-toggle" type="button" class="term-tool-btn" title="Ajuste de línea" aria-label="Ajuste de línea">↩ wrap</button>
+            <button id="terminal-scroll-bottom" type="button" class="term-tool-btn" title="Ir al final" aria-label="Ir al final">↓ fin</button>
+          </div>
+        </div>
         <pre id="mirror-screen" class="view-screen" aria-label="Espejo de la terminal del agente" data-i18n-aria-label="panel.mirror_aria"></pre>
       </div>
       <div id="mirror-empty" class="hidden" data-i18n="panel.terminal_empty">Sin terminal que mostrar todavía</div>
@@ -3034,9 +3270,14 @@
   <section id="settings-sheet" role="dialog" aria-modal="false" aria-label="Ajustes" data-i18n-aria-label="settings.aria" inert>
     <div class="s-head">
       <span class="s-title" data-i18n="settings.title">Ajustes</span>
+      <span id="header-version" class="chip">v<span id="app-version-header">?</span></span>
       <button id="settings-close" type="button" title="Cerrar ajustes" data-i18n-title="settings.close_title">✕</button>
     </div>
     <div class="s-body">
+      <div class="s-row">
+        <span class="s-label" data-i18n="settings.mute_title">Anuncios de voz</span>
+        <button id="mute-btn" type="button" title="Silenciar anuncios" data-i18n-title="header.mute_title">🔊 Activo</button>
+      </div>
       <div class="s-row">
         <span class="s-label" data-i18n="settings.voice_engine">Transcripción de la llamada</span>
         <button id="voice-engine-btn" type="button">Dictado: Servidor</button>

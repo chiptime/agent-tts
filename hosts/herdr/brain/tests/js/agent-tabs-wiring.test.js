@@ -36,37 +36,37 @@ test("the cockpit carries one tablist with two tabs and two panels", () => {
   assert.ok(viewSlice.includes('id="agent-tabs"'), "the tablist must exist");
   assert.ok(viewSlice.includes('role="tablist"'), "it must be a tablist");
 
-  for (const tab of ["tab-agent", "tab-screen"]) {
+  for (const tab of ["tab-agent", "tab-terminal"]) {
     assert.ok(viewSlice.includes(`id="${tab}"`), `missing #${tab}`);
   }
-  for (const panel of ["agent-panel", "screen-panel"]) {
+  for (const panel of ["agent-panel", "terminal-panel"]) {
     assert.ok(viewSlice.includes(`id="${panel}"`), `missing #${panel}`);
   }
-  // One tab per panel: agent -> agent-panel, screen -> screen-panel.
+  // One tab per panel: agent -> agent-panel, terminal -> terminal-panel.
   assert.ok(viewSlice.includes('aria-controls="agent-panel"'));
-  assert.ok(viewSlice.includes('aria-controls="screen-panel"'));
+  assert.ok(viewSlice.includes('aria-controls="terminal-panel"'));
 
-  // Only one panel is shown at rest: the screen panel starts hidden and
+  // Only one panel is shown at rest: the terminal panel starts hidden and
   // its tab starts unselected, while the agent tab is the default.
   assert.ok(/aria-selected="false"/.test(viewSlice), "one tab starts unselected");
-  assert.ok(/id="screen-panel"[^>]*class="agent-panel hidden"|class="agent-panel hidden"[^>]*id="screen-panel"/.test(viewSlice),
-    "the screen panel must start hidden");
+  assert.ok(/id="terminal-panel"[^>]*class="agent-panel hidden"|class="agent-panel hidden"[^>]*id="terminal-panel"/.test(viewSlice),
+    "the terminal panel must start hidden");
 });
 
 test("each surface lives inside its own panel, never stacked", () => {
   const agentIdx = viewSlice.indexOf('id="agent-panel"');
   const turnsIdx = viewSlice.indexOf('id="glance-turns"');
-  const screenIdx = viewSlice.indexOf('id="screen-panel"');
-  const terminalIdx = viewSlice.indexOf('id="view-screen"');
-  assert.ok(agentIdx < turnsIdx && turnsIdx < screenIdx && screenIdx < terminalIdx,
-    "turns must sit inside #agent-panel and the terminal inside #screen-panel");
+  const terminalPanelIdx = viewSlice.indexOf('id="terminal-panel"');
+  const terminalIdx = viewSlice.indexOf('id="mirror-screen"');
+  assert.ok(agentIdx < turnsIdx && turnsIdx < terminalPanelIdx && terminalPanelIdx < terminalIdx,
+    "turns must sit inside #agent-panel and the terminal inside #terminal-panel");
 });
 
 test("app.js wires both tabs and swaps the panels", () => {
   assert.ok(appSrc.includes('$("tab-agent")'), "must resolve #tab-agent");
-  assert.ok(appSrc.includes('$("tab-screen")'), "must resolve #tab-screen");
+  assert.ok(appSrc.includes('$("tab-terminal")'), "must resolve #tab-terminal");
   assert.ok(appSrc.includes('$("agent-panel")'), "must resolve #agent-panel");
-  assert.ok(appSrc.includes('$("screen-panel")'), "must resolve #screen-panel");
+  assert.ok(appSrc.includes('$("terminal-panel")'), "must resolve #terminal-panel");
 
   // Selection is expressed on the ARIA contract, not only on a CSS class.
   assert.ok(appSrc.includes('setAttribute("aria-selected"'),
@@ -76,7 +76,7 @@ test("app.js wires both tabs and swaps the panels", () => {
 
   // Both tabs are clickable and the tablist responds to arrow keys.
   assert.ok(appSrc.includes('tabAgent.addEventListener("click"'));
-  assert.ok(appSrc.includes('tabScreen.addEventListener("click"'));
+  assert.ok(appSrc.includes('tabTerminal.addEventListener("click"'));
   assert.ok(appSrc.includes('"ArrowRight"') && appSrc.includes('"ArrowLeft"'),
     "arrow keys must move between the tabs");
 });

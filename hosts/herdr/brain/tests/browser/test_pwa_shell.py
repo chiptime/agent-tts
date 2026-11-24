@@ -29,8 +29,6 @@ def spanish_snapshot(page) -> dict:
             settingsTitle: document.querySelector('#settings-sheet .s-title').textContent,
             call: document.getElementById('call-btn').textContent,
             tabAgent: document.getElementById('glance-label').textContent,
-            tabScreen: document.querySelector('#tab-screen').textContent,
-            tabHistory: document.querySelector('#tab-history').textContent,
             tabTerminal: document.querySelector('#tab-terminal').textContent,
             replyPlaceholder: document.getElementById('pane-reply-input').getAttribute('placeholder'),
             send: document.getElementById('pane-reply-send').textContent,
@@ -45,8 +43,6 @@ EXPECTED_SPANISH = {
     "settingsTitle": "Ajustes",
     "call": "📞 Llamar",
     "tabAgent": "Vista del agente",
-    "tabScreen": "Pantalla",
-    "tabHistory": "Historial",
     "tabTerminal": "Terminal",
     "replyPlaceholder": "Responde al agente…",
     "send": "Enviar",
@@ -142,7 +138,7 @@ def test_language_switch_repaints_persists_and_returns(karaoke_harness):
     assert page.evaluate("() => document.documentElement.lang") == "en"
     assert page.evaluate("() => localStorage.getItem('brain:locale:v1')") == "en"
     assert page.locator("#call-btn").text_content() == "📞 Call"
-    assert page.locator("#tab-history").text_content() == "History"
+    assert page.locator("#tab-terminal").text_content() == "Terminal"
     assert (
         page.locator("#pane-reply-input").get_attribute("placeholder")
         == "Reply to the agent…"
