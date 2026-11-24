@@ -1426,6 +1426,21 @@
       (selection && !selection.isCollapsed);
   }
 
+  function playReaderWithBrowser(event, content) {
+    if (!ttsEngine || !ttsEngine.supported) return false;
+    if (ttsEngine.state.activeContainer !== content) ttsEngine.indexContainer(content);
+    var hit = (document.elementFromPoint && event.clientX !== undefined)
+      ? document.elementFromPoint(event.clientX, event.clientY) : null;
+    var target = (hit || event.target).closest(".tts-sentence, [data-tts-id]");
+    var rawId = target && target.getAttribute("data-tts-id");
+    var id = rawId ? parseInt(rawId, 10) : NaN;
+    var index = isNaN(id) ? -1 : ttsEngine.state.sentences.findIndex(function (s) { return s.id === id; });
+    if (!ttsEngine.state.sentences.length) return false;
+    if (audioBusy || glanceReplay || karaokeCtl.state().plan || speechCtl.activeId()) stopAudio();
+    ttsEngine.playFromIndex(index < 0 ? 0 : index);
+    return true;
+  }
+
   // Delegate once on the stable root: polling/remounts never multiply handlers.
   var glancePress = null;
   var glanceSuppressed = false;
@@ -1462,34 +1477,7 @@
     // documentación de modular-saas (RFC-02): indexa el turno bajo demanda,
     // abre la barra y habla AL INSTANTE. El servidor queda sólo como
     // fallback: navegador sin Web Speech o contenido sin frases indexables.
-    if (ttsEngine && ttsEngine.supported) {
-      if (ttsEngine.state.activeContainer !== content) {
-        ttsEngine.indexContainer(content);
-      }
-      // El target se resolvió ANTES de indexar: los spans nuevos quedan
-      // debajo, no encima. elementFromPoint re-resuelve la frase tocada
-      // sobre el DOM ya indexado (con fallback al target original).
-      var hit = (document.elementFromPoint && event.clientX !== undefined)
-        ? document.elementFromPoint(event.clientX, event.clientY) : null;
-      var targetSentenceEl = (hit || event.target).closest(".tts-sentence, [data-tts-id]");
-      var ttsIndex = 0;
-      if (targetSentenceEl) {
-        var rawTtsId = targetSentenceEl.getAttribute("data-tts-id");
-        var ttsId = rawTtsId ? parseInt(rawTtsId, 10) : NaN;
-        var sIndex = isNaN(ttsId) ? -1
-          : ttsEngine.state.sentences.findIndex(function (s) { return s.id === ttsId; });
-        if (sIndex !== -1) ttsIndex = sIndex;
-      }
-      if (ttsEngine.state.sentences.length > 0) {
-        // El motor toma el mando: cualquier audio/teleprompter del servidor
-        // se detiene (mismos efectos que el botón stop).
-        if (audioBusy || glanceReplay || karaokeCtl.state().plan || speechCtl.activeId()) {
-          stopAudio();
-        }
-        ttsEngine.playFromIndex(ttsIndex);
-        return;
-      }
-    }
+    if (playReaderWithBrowser(event, content)) return;
 
     // Fallback de reproducción previa con servidor
     glanceTap = setTimeout(function () {
@@ -1631,8 +1619,56 @@
     turn.classList.add("has-rendered");
     callReader.mountTurn(content, { text: text, html: html });
     turn.readerHtml = html;
+    if (role === "brain") prepareReaderControls(content);
     if (mermaidViewer && content) mermaidViewer.renderIn(content);
   }
+
+  function drawerReaderControl(event) {
+    var control = event.target.closest(".tts-sent, .tts-sent-cont");
+    var content = control && control.closest(".reader-content");
+    var turn = content && content.closest(".turn.brain");
+    return turn && conv.contains(turn) && !event.target.closest(readerNativeControl) ? control : null;
+  }
+
+  function activateDrawerReader(event, control) {
+    var content = control.closest(".reader-content");
+    if (readerNativeOperation(event)) return;
+    if (playReaderWithBrowser(event, content)) return;
+    var reading = callReader.readableReplay(content, control.getAttribute("data-sent-idx"));
+    if (reading.rawText.trim()) {
+      stopAudio();
+      speakText(reading.rawText, "brain");
+    }
+  }
+
+  var drawerPress = null;
+  var drawerSuppressed = false;
+  conv.addEventListener("pointerdown", function (event) {
+    drawerSuppressed = event.button !== 0;
+    drawerPress = { x: event.clientX, y: event.clientY, time: performance.now() };
+  });
+  conv.addEventListener("pointermove", function (event) {
+    if (drawerPress && Math.hypot(event.clientX - drawerPress.x, event.clientY - drawerPress.y) > 8) drawerSuppressed = true;
+  });
+  conv.addEventListener("pointerup", function () {
+    if (drawerPress && performance.now() - drawerPress.time >= 500) drawerSuppressed = true;
+    drawerPress = null;
+  });
+  ["pointercancel", "dragstart", "contextmenu", "dblclick"].forEach(function (name) {
+    conv.addEventListener(name, function () { drawerSuppressed = true; drawerPress = null; });
+  });
+  conv.addEventListener("click", function (event) {
+    var control = drawerReaderControl(event);
+    if (!control || event.button !== 0 || event.detail > 1 || drawerSuppressed) return;
+    activateDrawerReader(event, control);
+  });
+  conv.addEventListener("keydown", function (event) {
+    var control = drawerReaderControl(event);
+    if (!control || event.target !== control || event.repeat ||
+        (event.key !== "Enter" && event.key !== " ") || readerNativeOperation(event)) return;
+    event.preventDefault();
+    activateDrawerReader(event, control);
+  });
 
   /* Snapshot repaint for the WHOLE drawer: re-run the mount decision for
    * every real turn (skips the ghost bubble and announce/system rows by
@@ -6327,27 +6363,6 @@
     onSwitchPane: applyVoiceSwitch
   });
 
-  /* Call history (S6/S7): the calls module is dependency-injected and
-   * mounted ONCE into the Llamadas POPUP (#calls-section sheet, opened
-   * with the 🕘 drawer-head button); refresh() runs every time the
-   * sheet opens, so the list is current without a poll. */
-  var callsUI = null;
-  if (window.Calls) {
-    var callsContainer = document.getElementById("calls-container");
-    if (callsContainer) {
-      callsUI = window.Calls.createCallsUI({
-        doc: document,
-        http: function (url) { return readFetch(url); },
-        t: t,
-        onResume: function (call) {
-          closeCallsSheet();  // resuming redials: the popup goes with the call
-          resumeCall(call.call_id);
-        }
-      });
-      callsUI.mount(callsContainer);
-    }
-  }
-
   /* Device pairing UI (F1 device pairing): mounts inside Ajustes and
    * owns the bearer token every write fetch attaches. Refreshed at
    * boot (fail-soft: an older brain predates /devices) and after each
@@ -6374,6 +6389,29 @@
       }
     });
     pairingUI.refresh();
+  }
+
+  /* Call history (S6/S7): the calls module is dependency-injected and
+   * mounted ONCE into the Llamadas POPUP (#calls-section sheet, opened
+   * with the 🕘 drawer-head button); refresh() runs every time the
+   * sheet opens, so the list is current without a poll. Mounted AFTER the
+   * pairing UI: mount() fetches the list, and that read must already carry
+   * the device bearer (a paired device would otherwise get a 403). */
+  var callsUI = null;
+  if (window.Calls) {
+    var callsContainer = document.getElementById("calls-container");
+    if (callsContainer) {
+      callsUI = window.Calls.createCallsUI({
+        doc: document,
+        http: function (url) { return readFetch(url); },
+        t: t,
+        onResume: function (call) {
+          closeCallsSheet();  // resuming redials: the popup goes with the call
+          resumeCall(call.call_id);
+        }
+      });
+      callsUI.mount(callsContainer);
+    }
   }
 
   /* Web Push card (S5): mounts inside Ajustes below the pairing card.
@@ -6886,7 +6924,9 @@
         }
         if (err && /timeout/.test(String(err.message || err))) {
           showBanner(t("brain.timeout"));
-        } else {
+        } else if (navigator.onLine !== false) {
+          /* Offline (airplane mode) is already reported by #offline-banner;
+           * a second "network error" banner would only repeat it. */
           showBanner(t("brain.network"));
         }
       })
