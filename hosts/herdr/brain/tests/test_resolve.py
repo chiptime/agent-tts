@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from tests.hermetic_path import system_path
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(REPO_ROOT / "tools"))
@@ -142,7 +143,7 @@ class TestResolveHerdrBin:
         (brew / "bin").mkdir(parents=True)
         _exec_marker(brew / "bin", "herdr")
         got = res.resolve_herdr_bin(env={
-            "PATH": f"{bindir}:/usr/bin:/bin",
+            "PATH": f"{bindir}:{system_path(tmp_path)}",
             "HOMEBREW_PREFIX": str(brew),
         }, runner=_refusing_runner)
         assert got == str(bindir / "herdr")
@@ -152,7 +153,7 @@ class TestResolveHerdrBin:
         (brew / "bin").mkdir(parents=True)
         _exec_marker(brew / "bin", "herdr")
         got = res.resolve_herdr_bin(env={
-            "PATH": "/usr/bin:/bin",
+            "PATH": system_path(tmp_path),
             "HOMEBREW_PREFIX": str(brew),
         }, runner=_refusing_runner)
         assert got == str(brew / "bin" / "herdr")
@@ -166,7 +167,7 @@ class TestResolveHerdrBin:
         _exec_marker(brew2 / "bin", "herdr")
         calls: list = []
         got = res.resolve_herdr_bin(
-            env={"PATH": f"{brewbin}:/usr/bin:/bin"},
+            env={"PATH": f"{brewbin}:{system_path(tmp_path)}"},
             runner=_brew_runner(brew2, calls),
         )
         assert got == str(brew2 / "bin" / "herdr")
@@ -177,13 +178,13 @@ class TestResolveHerdrBin:
         (home / ".local" / "bin").mkdir(parents=True)
         _exec_marker(home / ".local" / "bin", "herdr")
         got = res.resolve_herdr_bin(
-            env={"PATH": "/usr/bin:/bin", "HOME": str(home)}, runner=_refusing_runner
+            env={"PATH": system_path(tmp_path), "HOME": str(home)}, runner=_refusing_runner
         )
         assert got == str(home / ".local" / "bin" / "herdr")
 
     def test_step6_bare_herdr_last_resort(self, tmp_path):
         got = res.resolve_herdr_bin(
-            env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path / "empty-home")},
+            env={"PATH": system_path(tmp_path), "HOME": str(tmp_path / "empty-home")},
             runner=_refusing_runner,
         )
         assert got == "herdr"
