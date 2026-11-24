@@ -1630,15 +1630,19 @@
     return turn && conv.contains(turn) && !event.target.closest(readerNativeControl) ? control : null;
   }
 
-  function activateDrawerReader(event, control) {
+  function replayDrawerSuffix(control) {
     var content = control.closest(".reader-content");
-    if (readerNativeOperation(event)) return;
-    if (playReaderWithBrowser(event, content)) return;
     var reading = callReader.readableReplay(content, control.getAttribute("data-sent-idx"));
     if (reading.rawText.trim()) {
       stopAudio();
       speakText(reading.rawText, "brain");
     }
+  }
+
+  function activateDrawerReader(event, control) {
+    if (readerNativeOperation(event)) return;
+    if (playReaderWithBrowser(event, control.closest(".reader-content"))) return;
+    replayDrawerSuffix(control);
   }
 
   var drawerPress = null;
@@ -1667,7 +1671,9 @@
     if (!control || event.target !== control || event.repeat ||
         (event.key !== "Enter" && event.key !== " ") || readerNativeOperation(event)) return;
     event.preventDefault();
-    activateDrawerReader(event, control);
+    /* Keyboard has no pointer position: like the glance reader, replay the
+     * focused sentence's suffix from the server instead of guessing a hit. */
+    replayDrawerSuffix(control);
   });
 
   /* Snapshot repaint for the WHOLE drawer: re-run the mount decision for

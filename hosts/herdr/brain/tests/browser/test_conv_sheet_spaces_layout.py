@@ -263,6 +263,29 @@ def test_online_ask_failure_still_shows_the_network_banner(karaoke_app):
     expect(page.locator("#banner")).to_contain_text("Error de red hablando con el brain")
 
 
+def test_drawer_reader_keyboard_replays_the_focused_sentence(karaoke_app):
+    text = 'First sentence. Second sentence.'
+    turn = {'role': 'brain', 'text': text, 'ts': '2026-01-01T00:00:00Z'}
+    harness = karaoke_app(history=[turn])
+    harness.respond('/call-history/rendered', {'turns': [{
+        **turn, 'role': 'assistant', 'turn_id': 't0',
+        'html': '<p><span class="tts-sent" data-sent-idx="0">First sentence.</span> '
+                '<span class="tts-sent" data-sent-idx="1">Second sentence.</span></p>',
+        'map': {'contract': 'reader-pipeline/anchors@1', 'total_sents': 2},
+    }], 'has_more': False}, query=('before', 'limit'))
+    reply = harness.queue_tts()
+    page = harness.load().page
+    page.evaluate("""() => {
+        const drawer = document.getElementById('call-drawer');
+        drawer.classList.add('open');
+        drawer.removeAttribute('inert');
+    }""")
+    page.locator('#conversation .reader-content .tts-sent').nth(1).focus()
+    page.keyboard.press('Enter')
+    page.wait_for_function("() => __karaokeHarness.fetchCalls.includes('/tts')")
+    assert reply.request.post_data_json['text'] == 'Second sentence.'
+
+
 def test_glance_reader_still_speaks_selected_sentence(karaoke_app):
     text = 'First sentence. Second sentence.'
     turn = {'role': 'assistant', 'text': text, 'turn_id': 't0',
