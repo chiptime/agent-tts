@@ -74,7 +74,7 @@ _MAX_VOCAB_TERM_CHARS = 40
 _MAX_VOCAB_PROMPT_CHARS = 300
 
 
-def live_vocabulary_hint() -> Optional[str]:
+def live_vocabulary_hint(language: Optional[str] = None) -> Optional[str]:
     """The D8 technical-vocabulary prompt for live transcription.
 
     Bounded and control-character free by construction: a hostile or
@@ -101,7 +101,16 @@ def live_vocabulary_hint() -> Optional[str]:
         safe = " ".join(safe.split())[:_MAX_VOCAB_TERM_CHARS].strip()
         if safe:
             cleaned.append(safe)
-    prompt = " ".join(cleaned[:_MAX_VOCAB_TERMS])
+    terms = cleaned[:_MAX_VOCAB_TERMS]
+    if not terms:
+        return None
+    if language in ("es", "en"):
+        prefix = "También hablamos de " if language == "es" else "We discuss "
+        conjunction = " y " if language == "es" else " and "
+        body = terms[0] if len(terms) == 1 else ", ".join(terms[:-1]) + conjunction + terms[-1]
+        prompt = prefix + body + "."
+    else:
+        prompt = " ".join(terms)
     if len(prompt) > _MAX_VOCAB_PROMPT_CHARS:
         prompt = prompt[:_MAX_VOCAB_PROMPT_CHARS].rsplit(" ", 1)[0]
     return prompt or None

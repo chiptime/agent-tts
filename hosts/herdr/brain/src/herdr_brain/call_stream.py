@@ -229,6 +229,38 @@ def transcript_is_hint_capture(
     return bool(hint) and all(tok in hint for tok in spoken)
 
 
+# Whisper's classic silence/tail hallucination: a YouTube sign-off it
+# learned from subtitles. Compared token-for-token against the WHOLE
+# normalized turn (see _norm_tokens: case, punctuation and spacing are
+# ignored, accents are kept so both "video" and "vídeo" are listed).
+_HALLUCINATED_SIGNOFFS = frozenset(
+    tuple(_norm_tokens(phrase))
+    for phrase in (
+        "gracias por ver el video",
+        "gracias por ver el vídeo",
+        "gracias por ver este video",
+        "gracias por ver este vídeo",
+        "thanks for watching",
+        "thank you for watching",
+    )
+)
+
+
+def transcript_is_known_hallucination(text: Optional[str]) -> bool:
+    """True when the WHOLE turn is exactly a known Whisper sign-off
+    hallucination ("gracias por ver el video", "thanks for watching"...).
+
+    Whole-turn only, like :func:`transcript_is_hint_capture`: the live
+    transcriber returns text without word timestamps, so a sign-off
+    embedded in a longer utterance cannot be told from real speech and
+    is never touched. A match degrades to the empty-transcript path
+    ("no te entendí") instead of dispatching garbage to the model.
+    """
+    if not text:
+        return False
+    return tuple(_norm_tokens(text)) in _HALLUCINATED_SIGNOFFS
+
+
 def resolve_turn_transcript(
     full_text: Optional[str], finals_text: Optional[str], initial_prompt: Optional[str]
 ) -> str:
@@ -245,12 +277,16 @@ def resolve_turn_transcript(
     finals ever stabilized, and a pure hint capture never wins.
     """
     finals = (finals_text or "").strip()
-    if transcript_is_hint_capture(finals, initial_prompt):
+    if transcript_is_hint_capture(finals, initial_prompt) or (
+        transcript_is_known_hallucination(finals)
+    ):
         finals = ""  # the agreed text itself is an echo: no truth to keep
     if finals:
         return finals
     full = (full_text or "").strip()
-    if transcript_is_hint_capture(full, initial_prompt):
+    if transcript_is_hint_capture(full, initial_prompt) or (
+        transcript_is_known_hallucination(full)
+    ):
         full = ""
     return full
 
@@ -1131,7 +1167,8 @@ async def handle_call_stream(
     # D8: the vocabulary hint is read once per connection (operators edit
     # the env between runs, not mid-call). Kept in scope: the turn-end
     # transcript filter needs the same terms Whisper was biased with.
-    live_hint = live_vocabulary_hint()
+    live_hint = live_vocabulary_hint(locale)
+    capture_hint = live_vocabulary_hint()
     session = StreamingTranscriptionSession(
         websocket,
         transcriber,
@@ -1222,7 +1259,7 @@ async def handle_call_stream(
             return
         await send_stt_notice_once()
         raw_str = (text or "").strip()
-        text_str = resolve_turn_transcript(raw_str, session.finals_text, live_hint)
+        text_str = resolve_turn_transcript(raw_str, session.finals_text, capture_hint)
         if text_str != raw_str:
             # Bounded, text-free: says the decision fired, never what
             # was said.

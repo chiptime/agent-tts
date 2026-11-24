@@ -375,6 +375,77 @@ def test_resolve_turn_transcript_unit():
     assert resolve_turn_transcript("PR rama herdr opencode", "PR rama", hint) == ""
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Gracias por ver el video",
+        "gracias por ver este video.",
+        "¡Gracias por ver el vídeo!",
+        "  GRACIAS por ver este   vídeo  ",
+        "Thanks for watching",
+        "thanks for watching!",
+        "Thank you for watching.",
+    ],
+)
+def test_transcript_is_known_hallucination_matches_whole_turn_closers(text):
+    """S2: a turn that is EXACTLY a known YouTube sign-off (normalized)
+    is Whisper's silence/tail hallucination."""
+    from herdr_brain.call_stream import transcript_is_known_hallucination
+
+    assert transcript_is_known_hallucination(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "",
+        None,
+        "hola buenos días",
+        "gracias",
+        "Gracias por ver el video y suscríbete",
+        "dile que gracias por ver el video",
+        "Hola, thanks for watching",
+        "Thanks for watching the demo with me",
+    ],
+)
+def test_transcript_is_known_hallucination_never_matches_real_speech(text):
+    """S2: anything carrying other words is real speech and passes."""
+    from herdr_brain.call_stream import transcript_is_known_hallucination
+
+    assert not transcript_is_known_hallucination(text)
+
+
+def test_resolve_turn_transcript_drops_whole_turn_hallucination():
+    """S2: a whole-turn sign-off degrades to '' (-> 'no te entendí'),
+    whether it came from the finals or the full-window fallback, and
+    with or without a vocabulary hint in play; real speech and the
+    existing hint rules are untouched."""
+    from herdr_brain.call_stream import resolve_turn_transcript
+
+    hint = "commit, push, PR, rama, herdr, opencode"
+    assert resolve_turn_transcript("Gracias por ver el video", "", hint) == ""
+    assert resolve_turn_transcript("Gracias por ver el video", "", None) == ""
+    assert resolve_turn_transcript("Thanks for watching.", "", hint) == ""
+    # Hallucinated finals fall back to the (clean) full window.
+    assert resolve_turn_transcript(
+        "abrí el PR de herdr", "gracias por ver este video", hint
+    ) == "abrí el PR de herdr"
+    # Both hallucinated: empty.
+    assert resolve_turn_transcript(
+        "Gracias por ver el video", "gracias por ver el video", hint
+    ) == ""
+    # Real speech that merely contains the phrase is preserved.
+    assert resolve_turn_transcript(
+        "dile que gracias por ver el video", "", hint
+    ) == "dile que gracias por ver el video"
+    assert resolve_turn_transcript(
+        "", "Gracias por ver el video y suscríbete", hint
+    ) == "Gracias por ver el video y suscríbete"
+    # Previous behavior still holds.
+    assert resolve_turn_transcript("hola buenos días", "", hint) == "hola buenos días"
+    assert resolve_turn_transcript("PR rama herdr opencode", "", hint) == ""
+
+
 def test_hint_capture_transcript_degrades_to_empty(tmp_path):
     """2026-11-17 device regression: the echo 'PR rama herdr opencode'
     must reach the client as an EMPTY transcript (the existing
@@ -401,6 +472,42 @@ def test_hint_capture_transcript_degrades_to_empty(tmp_path):
         reply = ws.receive_json()
         assert reply["type"] in ("transcript", "final")
         assert reply["text"] == ""
+
+
+@pytest.mark.parametrize(
+    "spoken, expected",
+    [
+        ("Gracias por ver el video", ""),
+        ("Thank you for watching.", ""),
+        ("dile que gracias por ver el video", "dile que gracias por ver el video"),
+    ],
+)
+def test_whole_turn_signoff_hallucination_degrades_to_empty(
+    tmp_path, spoken, expected
+):
+    """S2 end to end: a turn that is exactly a Whisper sign-off reaches
+    the client as an EMPTY transcript ('no te entendí'); the same words
+    inside real speech are dispatched untouched."""
+    store = PairingStore(tmp_path)
+    minted = store.mint()
+    app = build_app(
+        tmp_path,
+        transcriber=make_fixed_text_transcriber(_stream_cfg(tmp_path), spoken),
+    )
+    client = TestClient(app)
+    pair_resp = client.post("/pair", json={"code": minted["code"], "label": "test-phone"})
+    assert pair_resp.status_code == 200
+    token = pair_resp.json()["token"]
+
+    with client.websocket_connect("/call/stream") as ws:
+        ws.send_json({"type": "auth", "token": token})
+        assert ws.receive_json()["type"] == "auth_ok"
+        for _ in range(15):
+            ws.send_bytes(SPEECH_100MS)
+        ws.send_json({"type": "transcribe", "duration_ms": 1000, "pre_roll_ms": 500})
+        reply = ws.receive_json()
+        assert reply["type"] in ("transcript", "final")
+        assert reply["text"] == expected
 
 
 def test_real_speech_mentioning_hint_terms_passes(tmp_path):
@@ -1387,33 +1494,46 @@ def test_hangup_cancels_streaming_and_next_call_is_fresh(tmp_path):
         assert _recv(ws2) == {"type": "partial", "text": "nueva llamada"}
 
 
-def test_locale_and_vocabulary_hint_reach_the_model(tmp_path, monkeypatch):
+@pytest.mark.parametrize("locale,prompt,spoken", [
+    ("es", "También hablamos de commit, push, PR, rama, herdr y opencode.",
+     "también hablamos de"),
+    ("en", "We discuss commit, push, PR, rama, herdr and opencode.",
+     "we discuss"),
+])
+def test_locale_and_vocabulary_hint_reach_the_model(
+    tmp_path, monkeypatch, locale, prompt, spoken
+):
     """D8: the app locale from the auth message forces the transcription
     language; the operator-editable vocabulary env var becomes the
     recognition hint — on partial passes AND the turn-end transcript."""
     monkeypatch.setenv(
         "HERDR_BRAIN_LIVE_STT_VOCABULARY", "commit, push, PR, rama, herdr, opencode"
     )
-    model = ScriptedStreamingModel(["abre el PR de la rama"])
+    model = ScriptedStreamingModel([spoken])
     model.release()
     client = _streaming_app(tmp_path, model)
 
     with client.websocket_connect("/call/stream") as ws:
-        _auth(ws, locale="es")
+        _auth(ws, locale=locale)
         ws.send_json({"type": "stream", "action": "start"})
         _send_audio(ws, 1000)
-        assert _recv(ws)["type"] == "partial"
-        assert model.calls[0][0] == "es"
-        assert model.calls[0][1] == "commit push PR rama herdr opencode"
+        assert _recv(ws) == {"type": "partial", "text": spoken}
+        assert model.calls[0][0] == locale
+        assert model.calls[0][1] == prompt
 
         # Turn end: the stop's flush pass and the transcript BOTH carry
         # the hints (the flush is a real inference).
         ws.send_json({"type": "stream", "action": "stop"})
         ws.send_json({"type": "transcribe", "duration_ms": 1000, "pre_roll_ms": 0})
-        assert _drain(ws, 3)[-1]["type"] == "transcript"
+        messages = _drain(ws, 3)
+        assert messages[-1] == {
+            "type": "transcript", "text": spoken,
+            "duration_ms": 1000.0, "pre_roll_ms": 0.0,
+        }
+        assert " ".join(m["text"] for m in messages if m["type"] == "final") == spoken
         for call in model.calls[1:3]:
-            assert call[0] == "es"
-            assert call[1] == "commit push PR rama herdr opencode"
+            assert call[0] == locale
+            assert call[1] == prompt
 
 
 def test_default_vocabulary_hint_applies_without_env(tmp_path, monkeypatch):
