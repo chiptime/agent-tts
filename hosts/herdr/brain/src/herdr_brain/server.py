@@ -53,6 +53,7 @@ from .approval_lexicon import (
     resolve_utterance,
 )
 from . import access as access_module
+from . import session_launcher
 from .audit import AuditLog
 from .config import Settings
 from .consult import ConsultService
@@ -915,16 +916,6 @@ SESSIONS_RECENT_CAP = 10
 
 #: Masked title budget for a /sessions/recent row (mask BEFORE clip).
 SESSIONS_TITLE_CHARS = 80
-
-
-@lru_cache(maxsize=1)
-def launchable_harnesses() -> tuple:
-    """The CLOSED harness list a PWA launch may name: the
-    transcript-readers registry CANONICAL names (an alias never adds a
-    harness). Frozen per process — the registry is immutable."""
-    from .transcript_readers.registry import default_registry
-
-    return tuple(default_registry().harnesses())
 
 
 def _resolved_within_roots(cwd: str, roots) -> Optional[str]:
@@ -4423,7 +4414,7 @@ def create_app(
             "roots": [{"path": root.path, "label": root.label} for root in roots],
             "spaces": spaces,
             "recents": recents,
-            "harnesses": list(launchable_harnesses()),
+            "harnesses": list(session_launcher.launchable_harnesses()),
             "mux": _mux_summary(tools),
         }
 
@@ -4460,8 +4451,8 @@ def create_app(
         roots = operator_config.roots()
         if not roots:
             refuse("roots_unconfigured")
-        harness = (body.harness or "").strip().lower()
-        if harness not in launchable_harnesses():
+        harness = session_launcher.resolve_launch_harness(body.harness)
+        if harness is None:
             refuse("unknown_harness")
         resolved = _resolved_within_roots(body.cwd, roots)
         if resolved is None:
@@ -4570,9 +4561,9 @@ def create_app(
         roots = operator_config.roots()
         if not roots:
             refuse("roots_unconfigured")
-        harness = (body.harness or "").strip().lower()
+        harness = session_launcher.resolve_launch_harness(body.harness)
         session_id = (body.session_id or "").strip()
-        if harness not in launchable_harnesses():
+        if harness is None:
             refuse("unknown_harness")
         if harness not in RESUME_COMMANDS:
             refuse("resume_not_enabled")
