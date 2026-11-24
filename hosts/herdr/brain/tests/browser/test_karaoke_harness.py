@@ -109,7 +109,7 @@ EXPECTED_DIGESTS = {
     # i18n gain herd.peer_unreachable. app.js, index.html (/) and both
     # i18n re-pinned below.
     # Parity-w2 S8: loaded-history search controls and highlights.
-    "/": "ea91f5186a55cb1730be81ccb8d616d5cd886d0f509a7c64bbc94fef065d8c74",
+    "/": "9230adb3f29f87718ac0952b8ed03e15fbefef47463158bc9878ba3114670c09",
     # send-track.js re-pinned for the correction batch (f7g): the
     # per-receipt seq guard (a lower seq is a stale delivery, ignored),
     # a start for an already-known receipt never regresses it, and a
@@ -149,7 +149,7 @@ EXPECTED_DIGESTS = {
     # (stopFailureToast pure block) branches on the server's stable
     # dialog_open reason.
     # Parity-w2 S8: history search and the adaptive state poll.
-    "/app.js": "52682294b7cf3137ec21143fc9ea548eb07d8d8384a9bebb6edb0abff308eea0",
+    "/app.js": "5f41b996536e7e42b2d003159c41fbcded3a351fdfd6cb9591bd92d6131b6790",
     "/history.js": "fa3526827b3e791bdc8f5950e398f3e318a2bff1c85ba684f0231d22d74e08d9",
     "/push.js": "28e9dd9c444f8f5948d7fc3186a461cf113c1d4de8266e9de769c0781502eaa7",
     "/receipts.js": "df01a313d8f6101bd9601d5a2a65eb420df7791c417a09e2d0d8c269a36742b0",
