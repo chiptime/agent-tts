@@ -22,16 +22,16 @@ def test_empty_reader_with_screen_recovers_when_turns_arrive(karaoke_app, sessio
     harness.respond("/view", {"status": {"active": False}, "screen": "Terminal is available.",
                               "pending": {"detected": False}}, query=("pane_id",))
     harness.load()
-    expect(page.locator("#view-screen")).to_have_text("Terminal is available.")
+    expect(page.locator("#mirror-screen")).to_have_text("Terminal is available.")
     # Poll after the terminal snapshot has arrived, not just during boot.
     with page.expect_response(lambda response: "/rendered" in response.url):
         page.evaluate("() => __pollGlance()")
     empty = page.locator("#glance-empty")
     expect(empty).to_be_visible()
-    expect(empty).to_contain_text("Pantalla")
+    expect(empty).to_contain_text("Terminal")
     expect(empty).to_contain_text("sesión" if session is None else "conversación")
-    page.locator("#tab-screen").click()
-    expect(page.locator("#view-screen")).to_be_visible()
+    page.locator("#tab-terminal").click()
+    expect(page.locator("#mirror-screen")).to_be_visible()
     page.locator("#tab-agent").click()
     expect(empty).to_be_visible()
 

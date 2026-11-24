@@ -9,7 +9,10 @@ with the server's reason). Text nodes only.
 
 from __future__ import annotations
 
+import pytest
 from playwright.sync_api import expect
+
+pytestmark = pytest.mark.skip(reason="Message button removed from cockpit UI per operator request")
 
 WORKING_AGENT = [
     {

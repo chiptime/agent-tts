@@ -109,7 +109,7 @@ EXPECTED_DIGESTS = {
     # i18n gain herd.peer_unreachable. app.js, index.html (/) and both
     # i18n re-pinned below.
     # Parity-w2 S8: loaded-history search controls and highlights.
-    "/": "9230adb3f29f87718ac0952b8ed03e15fbefef47463158bc9878ba3114670c09",
+    "/": "289f75624d9de90c5daaa463a19321481833e47d88dfd48d76eb04feec13bc10",
     # send-track.js re-pinned for the correction batch (f7g): the
     # per-receipt seq guard (a lower seq is a stale delivery, ignored),
     # a start for an already-known receipt never regresses it, and a
@@ -149,7 +149,7 @@ EXPECTED_DIGESTS = {
     # (stopFailureToast pure block) branches on the server's stable
     # dialog_open reason.
     # Parity-w2 S8: history search and the adaptive state poll.
-    "/app.js": "5f41b996536e7e42b2d003159c41fbcded3a351fdfd6cb9591bd92d6131b6790",
+    "/app.js": "a7d16e05ddb66196b695002c0c2796e129d00e537ac64e910d73e2bccc2d345f",
     "/history.js": "fa3526827b3e791bdc8f5950e398f3e318a2bff1c85ba684f0231d22d74e08d9",
     "/push.js": "28e9dd9c444f8f5948d7fc3186a461cf113c1d4de8266e9de769c0781502eaa7",
     "/receipts.js": "df01a313d8f6101bd9601d5a2a65eb420df7791c417a09e2d0d8c269a36742b0",
@@ -183,8 +183,8 @@ EXPECTED_DIGESTS = {
     # Re-pinned for parity T4/S4: newsession.err_resume_workspace.
     # Re-pinned to the merged parity wave 2 bytes (stop.dialog_open S3,
     # pair.recovered S2, history find S8, and later merged keys).
-    "/i18n/en.js": "67546a216784969145c083aa54ebf071165e06dd94bf23972f1cbe4a0831dc07",
-    "/i18n/es.js": "ec8753009887c5bbdd269e8da817daf69b920809c9a06f074c087f05cfb37cea",
+    "/i18n/en.js": "63148c0c887ecee4811dc86c1e4b55161ec5c2bc98de3e6f0397771f90975e38",
+    "/i18n/es.js": "5caadf6361f25e0f8f74f7aa40120b38af82ca6b6abb5a763ec7d0ba344193d0",
     "/settings.js": "1c2cf3ed92bf959c19ecde0107618b8d1ff0690d2c6fa7c842a2fdc551e05f72",
     "/updates.js": "7f87250cf6cd9c2b8944da632fe036d0c18a87a90f48f70b84e18bcd338cfa84",
     "/calls.js": "9b9ec591709d282c6e673770b2ffc1ed1562650104d8e8393126d186aa764165",

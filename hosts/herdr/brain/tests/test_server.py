@@ -1262,24 +1262,24 @@ class TestStatic:
         assert 'aria-selected="true"' in tab_agent  # agent view is the default tab
         assert 'aria-controls="agent-panel"' in tab_agent
 
-        tab_screen = _element_tag(html, "tab-screen")
-        assert 'role="tab"' in tab_screen
-        assert 'aria-selected="false"' in tab_screen
-        assert 'aria-controls="screen-panel"' in tab_screen
+        tab_terminal = _element_tag(html, "tab-terminal")
+        assert 'role="tab"' in tab_terminal
+        assert 'aria-selected="false"' in tab_terminal
+        assert 'aria-controls="terminal-panel"' in tab_terminal
 
         agent_panel = _element_tag(html, "agent-panel")
         assert 'role="tabpanel"' in agent_panel
         assert "hidden" not in agent_panel  # the default tab is shown
 
-        screen_panel = _element_tag(html, "screen-panel")
-        assert 'role="tabpanel"' in screen_panel
-        assert "hidden" in screen_panel  # the other tab starts hidden
+        terminal_panel = _element_tag(html, "terminal-panel")
+        assert 'role="tabpanel"' in terminal_panel
+        assert "hidden" in terminal_panel  # the other tab starts hidden
 
         # Each panel owns one surface: turns inside #agent-panel, terminal
-        # inside #screen-panel — never both stacked in one body.
+        # inside #terminal-panel — never both stacked in one body.
         order = [
             'id="agent-tabs"', 'id="agent-panel"', 'id="glance-turns"',
-            'id="screen-panel"', 'id="view-screen"',
+            'id="terminal-panel"', 'id="mirror-screen"',
         ]
         positions = [view_slice.index(marker) for marker in order]
         assert positions == sorted(positions), positions
