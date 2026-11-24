@@ -12,6 +12,8 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError, expect
 
+from tests.browser.pwa_static import static_routes
+
 
 ROOT = Path(__file__).resolve().parents[2]
 STATIC = ROOT / "src/herdr_brain/static"
@@ -93,14 +95,7 @@ class RealMediaApp:
         self.held_audio = []
         self.audio = {name: (FIXTURES / name).read_bytes()
                       for name in ("short.mp3", "sample.mp3", "long.mp3")}
-        names = ("index.html", "app.js", "karaoke.js", "toast.js", "reader.js", "speech.js",
-                 "announce.js", "approval.js", "consult.js", "endpointing.js", "vad.js",
-                 "herd-group.js", "manifest.webmanifest", "icon.svg",
-                 "mermaid.min.js", "mermaid-viewer.js", "tts-engine.js", "pairing.js", "destructive.js", "history.js", "dialogs.js", "receipts.js", "push.js", "calls.js",
-                 "i18n.js", "i18n/es.js", "i18n/en.js", "settings.js", "updates.js", "dock.js",
-                 "stream-uplink.js", "stream-worklet.js")
-        self.static = {"/" + name: STATIC / name for name in names}
-        self.static["/"] = STATIC / "index.html"
+        self.static = {path: STATIC / name for path, name in static_routes().items()}
         self.api = {
             "/call-history": ({"turns": [
                 {"role": "user", "text": "Synthetic question", "ts": "2026-01-01T00:00:00Z"},
@@ -118,6 +113,9 @@ class RealMediaApp:
             # Device pairing boot poll (F1): unpaired default keeps the
             # pre-F1 stance.
             "/devices": ({"enforced": False, "current": None, "devices": []}, set()),
+            # Held Claude hook permissions (f7e S3): the 5s-beat poll of
+            # the global hold card; nothing held keeps it hidden.
+            "/hook/permissions": ({"pending": []}, set()),
             "/view": ({"status": {"active": False}, "screen": None, "transcript": None,
                        "pending": {"detected": False}}, {"pane_id"}),
             "/conversation": ({"pane_id": None, "session_id": None, "agent": None,

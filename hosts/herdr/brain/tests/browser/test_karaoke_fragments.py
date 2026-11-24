@@ -305,7 +305,7 @@ def test_sc04_retire_while_synthesis_pending(karaoke_app, action):
     if action == "stop":
         harness.page.locator("#stop-audio").click()
     elif action == "reset":
-        harness.page.locator("#conv-new").evaluate("el => el.click()")
+        harness.page.locator("#call-new").evaluate("el => el.click()")
     else:
         harness.page.locator(MAIN).evaluate("el => el.remove()")
     expect(harness.page.locator(".karaoke-active")).to_have_count(0)
@@ -328,7 +328,7 @@ def test_sc05_retire_while_metadata_and_play_are_pending(karaoke_app, action):
     if action == "stop":
         harness.page.locator("#stop-audio").click()
     elif action == "reset":
-        harness.page.locator("#conv-new").evaluate("el => el.click()")
+        harness.page.locator("#call-new").evaluate("el => el.click()")
     else:
         harness.page.locator(MAIN).evaluate("el => el.remove()")
     harness.media("metadata", source=old, duration=200)
@@ -525,7 +525,7 @@ def test_sc04_retire_before_metadata_arrives(karaoke_app, action):
     if action == "stop":
         harness.page.locator("#stop-audio").click()
     elif action == "reset":
-        harness.page.locator("#conv-new").evaluate("el => el.click()")
+        harness.page.locator("#call-new").evaluate("el => el.click()")
     else:
         harness.page.locator(MAIN).evaluate("el => el.remove()")
     harness.media("metadata", source=old, duration=100)

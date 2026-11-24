@@ -481,6 +481,9 @@ def test_pending_sentence_click_survives_natural_previous_audio_end(karaoke_app)
 @pytest.mark.parametrize("action", ["stop", "reset", "full-replay", "sentence", "main", "remove", "content", "session", "pane", "ask", "error"])
 def test_explicit_retirement_still_cancels_delayed_sentence_intent(karaoke_app, action):
     harness = app(karaoke_app)
+    if action == "reset":
+        # A new call resets only while a call is active.
+        harness.page.locator("#call-btn").click()
     full_near_end(harness)
     reply = harness.queue_tts(audio_url="/audio/replacement.mp3")
     anchor(harness).click()
@@ -488,7 +491,7 @@ def test_explicit_retirement_still_cancels_delayed_sentence_intent(karaoke_app, 
     if action == "stop":
         harness.page.locator("#stop-audio").click()
     elif action == "reset":
-        harness.page.locator("#conv-new").evaluate("el => el.click()")
+        harness.page.locator("#call-new").evaluate("el => el.click()")
     elif action == "full-replay":
         harness.page.locator(SURFACE + " .replay-btn").click()
         source(harness, "/replacement.mp3")
