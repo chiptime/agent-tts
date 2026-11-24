@@ -595,6 +595,16 @@ class TestLiveStreamingHints:
         for term in ("commit", "push", "PR", "rama", "herdr", "opencode"):
             assert term in hint
 
+    @pytest.mark.parametrize("language, expected", [
+        ("es", "También hablamos de commit, push, PR, rama, herdr y opencode."),
+        ("en", "We discuss commit, push, PR, rama, herdr and opencode."),
+    ])
+    def test_localized_default_vocabulary_hint(self, monkeypatch, language, expected):
+        from herdr_brain.stt import live_vocabulary_hint
+
+        monkeypatch.delenv("HERDR_BRAIN_LIVE_STT_VOCABULARY", raising=False)
+        assert live_vocabulary_hint(language) == expected
+
     def test_env_vocabulary_overrides_the_default(self, monkeypatch):
         from herdr_brain.stt import live_vocabulary_hint
 
