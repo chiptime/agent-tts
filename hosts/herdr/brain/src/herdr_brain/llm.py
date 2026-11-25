@@ -19,8 +19,10 @@ import asyncio
 import concurrent.futures
 import json
 import logging
+import queue
 import threading
 from datetime import datetime
+from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional
 
 from openai import AsyncOpenAI, OpenAI
@@ -29,6 +31,7 @@ from .approval import ApprovalGate, ApprovalGateStore, CREATE_SESSION, SEND_TO_S
 from .config import Settings
 from .herdr import AgentInfo, HerdrError
 from .memory import ConversationStore, clip_content
+from .sentence_chunker import SentenceChunker
 from .secrets_mask import mask_text
 from .tools import (
     MODEL_COMMANDS,
@@ -199,6 +202,13 @@ class TurnCancelled(BrainLLMError):
     """
 
 
+class _StreamRoundFailed(BrainLLMError):
+    """A streaming provider round died BEFORE producing any usable
+    content (W3-P1 FR-06): the caller may retry that round through the
+    legacy whole-answer path. A stream that dies WITH a usable prefix
+    never raises this — the prefix is the answer."""
+
+
 def build_openai_client(settings: Settings) -> OpenAI:
     """The ONE OpenAI-compatible client construction (GLM_API_KEY /
     GLM_BASE_URL env; no key ever enters the repository). Shared by
@@ -251,6 +261,14 @@ class _SyncProvider:
 
     def create(self, **kwargs):
         return self._client.chat.completions.create(**kwargs)
+
+    def create_stream(self, **kwargs):
+        """Streaming twin of create() (W3-P1): requests the provider's
+        chunk stream. Whatever the client makes of ``stream=True`` is
+        returned as-is — BrainLLM duck-checks the result and degrades
+        to the whole-answer round when it is not a stream (injected
+        scripted clients ignore the kwarg and return full responses)."""
+        return self._client.chat.completions.create(**kwargs, stream=True)
 
     def close(self) -> None:
         return None
@@ -323,6 +341,67 @@ class _OwnedAsyncProvider:
                     "client disconnected: provider request aborted"
                 ) from None
 
+    def create_stream(self, **kwargs):
+        """Cancellable streaming twin of create() (W3-P1).
+
+        Returns a SYNC iterator over the provider's chunks: a private
+        coroutine on the owned loop consumes the async chunk stream and
+        hands each chunk to the worker through a queue, so the worker
+        stays responsive to the request's cancel event with the exact
+        same POLL_S cadence and future-cancellation semantics as
+        create() — a disconnect aborts the in-flight HTTP task, not
+        merely a flag. The generator's close()/GC cancels a still-
+        running consumer, so abandoning iteration mid-stream never
+        leaves a request running on the loop.
+        """
+        handoff: "queue.Queue[tuple]" = queue.Queue()
+        finished = threading.Event()
+
+        async def _consume() -> None:
+            try:
+                stream = await self._client.chat.completions.create(**kwargs)
+                try:
+                    async for chunk in stream:
+                        handoff.put(("chunk", chunk))
+                    handoff.put(("done", None))
+                finally:
+                    closer = getattr(stream, "close", None)
+                    if closer is not None:
+                        await closer()
+            except BaseException as exc:  # noqa: BLE001 — forwarded verbatim
+                handoff.put(("error", exc))
+            finally:
+                finished.set()
+
+        handle = asyncio.run_coroutine_threadsafe(_consume(), self._loop)
+        try:
+            while True:
+                try:
+                    kind, payload = handoff.get(timeout=self.POLL_S)
+                except queue.Empty:
+                    if self._cancel_event is not None and self._cancel_event.is_set():
+                        # Same contract as create(): cancel the awaited
+                        # HTTP task; the consumer reports the abort.
+                        handle.cancel()
+                    continue
+                if kind == "chunk":
+                    yield payload
+                elif kind == "done":
+                    return
+                elif isinstance(
+                    payload, (asyncio.CancelledError, concurrent.futures.CancelledError)
+                ):
+                    raise TurnCancelled(
+                        "client disconnected: provider stream aborted"
+                    ) from None
+                else:
+                    raise payload
+        finally:
+            if not finished.is_set():
+                # Abandoned mid-stream (TurnCancelled raised by the
+                # caller's cooperative check): abort the consumer.
+                handle.cancel()
+
     def close(self) -> None:
         loop, self._loop = self._loop, None
         if loop is None:
@@ -344,6 +423,12 @@ class BrainLLM:
     # when the double/instance opts in, keeping every pre-existing
     # 3-arg test fake green.
     takes_cancel_event = True
+
+    # W3-P1 marker (same convention): the server passes a
+    # ``sentence_sink`` callable to ask() only when the double/instance
+    # opts in — fakes without it keep the exact legacy call shape and
+    # the byte-identical non-streaming round.
+    takes_sentence_sink = True
 
     def __init__(
         self,
@@ -403,6 +488,7 @@ class BrainLLM:
         pane_id: Optional[str] = None,
         cancel_event: Optional[threading.Event] = None,
         device: Optional[str] = None,
+        sentence_sink: Optional[Callable[[str], Any]] = None,
     ) -> Dict[str, Any]:
         """Returns ``{answer, pane_id, agent, session_id, approval}``.
 
@@ -431,6 +517,24 @@ class BrainLLM:
         (L34): the result's ``ring_commit`` carries the staging and the
         CALLER lands it at its own commit boundary — a rejected turn
         never touches the ring, so it can never evict earlier context.
+
+        ``sentence_sink`` (W3-P1, additive): when provided, the FINAL
+        answer round is consumed token-by-token through the provider's
+        streaming channel and every complete sentence (deterministic
+        :class:`SentenceChunker` boundary) is handed to the callable as
+        it completes, so TTS can start speaking before generation ends.
+        The sink receives the RAW model text — masking stays at the
+        outbound seams it owns (provider requests via
+        ``_masked_for_provider``, spoken renders via the TTS seam's
+        ``sanitize_for_speech``, the textual response via the ``answer``
+        masking below), exactly where it lives on the non-streaming
+        path. Tool rounds never feed the sink (PRD-06 §6: streaming
+        begins with the final answer phase); a round that emits
+        tool-call deltas suppresses any further feeding. Any streaming
+        failure degrades without losing the turn: with a usable prefix
+        the prefix IS the answer, without one the round retries through
+        the legacy whole-answer path. The returned contract is
+        unchanged — ``answer`` is the full text either way.
         """
         store = self._store or ConversationStore()
         key = ConversationStore.normalize(session_id)
@@ -482,18 +586,35 @@ class BrainLLM:
                 for _ in range(self._settings.max_tool_rounds + 1):
                     if aborted():
                         raise TurnCancelled("client disconnected before the model round")
-                    response = provider.create(
-                        model=self._settings.glm_model,
+                    round_kwargs = {
+                        "model": self._settings.glm_model,
                         # Provider boundary (S14): EVERY outbound request
                         # carries a masked copy — live context, ring history,
                         # the user turn, tool results and the model's own
                         # echoed call arguments. The working `messages` list
                         # and every store keep their raw bytes.
-                        messages=self._masked_for_provider(messages),
-                        tools=self._tools_schema(),
-                        tool_choice="auto",
-                    )
-                    choice = response.choices[0].message
+                        "messages": self._masked_for_provider(messages),
+                        "tools": self._tools_schema(),
+                        "tool_choice": "auto",
+                    }
+                    if sentence_sink is None:
+                        response = provider.create(**round_kwargs)
+                        choice = response.choices[0].message
+                    else:
+                        try:
+                            choice = self._streaming_round(
+                                provider, round_kwargs, sentence_sink, aborted
+                            )
+                        except _StreamRoundFailed as exc:
+                            # FR-06: the stream died before any usable
+                            # text — one legacy whole-answer retry.
+                            LOGGER.warning(
+                                "LLM stream produced nothing; retrying the "
+                                "round through the whole-answer path: %s", exc,
+                            )
+                            choice = self._whole_answer_round(
+                                provider, round_kwargs, sentence_sink
+                            )
                     if not getattr(choice, "tool_calls", None):
                         answer = (choice.content or "").strip()
                         break
@@ -595,6 +716,155 @@ class BrainLLM:
                 "title": mask_text(switched.title or ""),
             }
         return response
+
+    # -- W3-P1 streaming rounds (additive; legacy path never enters) -------
+
+    def _streaming_round(
+        self,
+        provider: Any,
+        round_kwargs: dict,
+        sink: Callable[[str], Any],
+        aborted: Callable[[], bool],
+    ) -> Any:
+        """One provider round consumed token-by-token (W3-P1).
+
+        Returns a message-shaped choice. Content deltas flow through a
+        fresh :class:`SentenceChunker` and every complete sentence is
+        handed to ``sink`` while the round is still streaming. Tool-call
+        deltas accumulate exactly like the legacy full response would
+        have carried them — the loop body after this call (dispatch,
+        gates) is UNCHANGED code. Degradation (FR-06):
+
+        - ``create_stream`` missing/raising, or the returned object not
+          being a stream (injected clients that ignore ``stream=True``):
+          the round runs whole-answer instead;
+        - the stream dying WITH usable content: the prefix is returned
+          as the answer (nothing re-tried, turn not lost);
+        - the stream dying with NO content: ``_StreamRoundFailed`` —
+          the caller retries the round whole-answer.
+
+        PRD-06 §6: once tool-call deltas appear, sink feeding stops for
+        the rest of the round — streaming belongs to the final answer
+        phase; a content-then-tools round (pathological) keeps its
+        already-spoken prefix, the documented out-of-scope risk.
+        """
+        chunker = SentenceChunker()
+        stream_factory = getattr(provider, "create_stream", None)
+        if not callable(stream_factory):
+            raise _StreamRoundFailed("provider has no create_stream")
+        try:
+            stream = stream_factory(**round_kwargs)
+        except Exception as exc:  # noqa: BLE001 — any setup failure degrades
+            raise _StreamRoundFailed(f"stream unavailable: {exc}") from exc
+        if not hasattr(stream, "__next__"):
+            # Provider ignored stream=True and returned a full response
+            # (the scripted-client shape): consume it the legacy way,
+            # still feeding the sink so speech keeps working.
+            return self._sink_whole_choice(getattr(stream, "choices")[0].message, sink, chunker)
+
+        content_parts: List[str] = []
+        tool_acc: Dict[int, Dict[str, str]] = {}
+        saw_tool = False
+        try:
+            for chunk in stream:
+                if aborted():
+                    raise TurnCancelled("client disconnected mid-stream")
+                choices = getattr(chunk, "choices", None)
+                if not choices:
+                    continue  # keep-alive/usage chunk with no delta
+                delta = getattr(choices[0], "delta", None)
+                if delta is None:
+                    continue
+                delta_tools = getattr(delta, "tool_calls", None)
+                if delta_tools:
+                    saw_tool = True
+                    for call in delta_tools:
+                        entry = tool_acc.setdefault(
+                            getattr(call, "index", 0) or 0,
+                            {"id": "", "name": "", "args": ""},
+                        )
+                        if getattr(call, "id", None):
+                            entry["id"] = call.id
+                        function = getattr(call, "function", None)
+                        if function is not None:
+                            if getattr(function, "name", None):
+                                entry["name"] += function.name
+                            if getattr(function, "arguments", None):
+                                entry["args"] += function.arguments
+                piece = getattr(delta, "content", None)
+                if piece:
+                    content_parts.append(piece)
+                    if not saw_tool:
+                        for sentence in chunker.feed(piece):
+                            sink(sentence)
+        except TurnCancelled:
+            raise
+        except Exception as exc:  # noqa: BLE001 — FR-06 degradation below
+            prefix = "".join(content_parts).strip()
+            if prefix:
+                LOGGER.warning(
+                    "LLM stream failed mid-answer; keeping the %d-char "
+                    "prefix as the turn's answer: %s", len(prefix), exc,
+                )
+                tail = chunker.flush()
+                if tail:
+                    sink(tail)
+                return SimpleNamespace(
+                    content="".join(content_parts), tool_calls=None
+                )
+            raise _StreamRoundFailed(f"stream died before any content: {exc}") from exc
+        finally:
+            closer = getattr(stream, "close", None)
+            if closer is not None:
+                closer()
+
+        if saw_tool:
+            tool_calls = [
+                SimpleNamespace(
+                    id=entry["id"],
+                    function=SimpleNamespace(name=entry["name"], arguments=entry["args"]),
+                )
+                for entry in tool_acc.values()
+            ]
+            return SimpleNamespace(
+                content="".join(content_parts) or None, tool_calls=tool_calls
+            )
+        tail = chunker.flush()
+        if tail:
+            sink(tail)
+        return SimpleNamespace(
+            content="".join(content_parts) or None, tool_calls=None
+        )
+
+    def _whole_answer_round(
+        self,
+        provider: Any,
+        round_kwargs: dict,
+        sink: Callable[[str], Any],
+    ) -> Any:
+        """The legacy whole-answer round, feeding the sink sentence by
+        sentence so a degraded turn still speaks progressively."""
+        response = provider.create(**round_kwargs)
+        return self._sink_whole_choice(
+            response.choices[0].message, sink, SentenceChunker()
+        )
+
+    def _sink_whole_choice(
+        self, choice: Any, sink: Callable[[str], Any], chunker: SentenceChunker
+    ) -> Any:
+        """Feeds a full-response choice's text through the chunker to
+        the sink (final answers only — tool rounds feed nothing) and
+        returns the choice UNCHANGED so the legacy loop body consumes
+        the original object."""
+        if not getattr(choice, "tool_calls", None):
+            content = getattr(choice, "content", None)
+            if content:
+                for sentence in chunker.feed(content):
+                    sink(sentence)
+                tail = chunker.flush()
+                if tail:
+                    sink(tail)
+        return choice
 
     def _retire_cancelled_gate(self, gate: Optional[ApprovalGate]) -> None:
         """Retires the gate THIS cancelled turn proposed, if any.
