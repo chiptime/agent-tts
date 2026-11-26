@@ -37,8 +37,9 @@ _OPTION_ROW = re.compile(
 #: Grok ask): the label is everything before the first 2+ space run.
 _SAME_ROW_DESCRIPTION = re.compile(r"^(?P<label>.+?)\s{2,}(?P<description>\S.*)$")
 
-#: The glyphs a checked/unchecked box or radio carries.
-_CHECKED_GLYPHS = ("[x]", "[✔]", "[✓]", "(●)", "(*)", "◉", "☒")
+#: The glyphs a checked/unchecked box or radio carries. ``[√]``/``[×]``
+#: are the TERM=linux forms of the tick and the chip's checked box.
+_CHECKED_GLYPHS = ("[x]", "[X]", "[✔]", "[✓]", "[√]", "[×]", "(●)", "(*)", "◉", "☒")
 _UNCHECKED_GLYPHS = ("[ ]", "(○)", "( )", "○", "☐", "○")
 
 #: Free-text rows a digit cannot answer (it would focus/type into the
@@ -51,6 +52,15 @@ FREE_TEXT_LABELS = (
     "tell claude what to change",
     "add notes",
 )
+
+#: The one unnumbered tail row Claude's v2.1.328 multi closes its block
+#: with (``Submit``; a wizard's intermediate step draws ``Next`` — same
+#: row, same keys, its own render code's submitButtonText).
+_SUBMIT_TAIL_ROW = re.compile(r"^(?:submit|next)$", re.IGNORECASE)
+
+#: How many own-row description lines one numbered row may carry (a
+#: bound, not a measurement — the real capture draws one).
+_MAX_DESCRIPTION_ROWS = 3
 
 
 def is_free_text_label(label: str) -> bool:
@@ -123,7 +133,10 @@ def split_checked(label: str) -> Tuple[str, Optional[bool]]:
 
 
 def collect_numbered_block(
-    lines: List[str], keep_free_text: bool = False
+    lines: List[str],
+    keep_free_text: bool = False,
+    keep_descriptions: bool = False,
+    submit_tail: bool = False,
 ) -> Optional[Tuple[int, int, List[Tuple[str, str, str, bool]]]]:
     """The longest run of consecutive numbered rows anchored at the tail.
 
@@ -134,6 +147,14 @@ def collect_numbered_block(
     does not is another widget's text. ``keep_free_text`` passes the
     same flag to :func:`parse_option_row` so the free-text rows count
     as rows of the run instead of ending it.
+
+    ``keep_descriptions`` (Claude v2.1.328's own-row layout): the
+    non-numbered rows that follow a numbered row attach to it as its
+    description instead of ending the run — bounded, and never across a
+    blank line, a chrome row, or a second numbered row. ``submit_tail``
+    lets ONE unnumbered ``Submit``/``Next`` row join the run as its
+    tail (row number ``""``); the run's numbering arithmetic ignores
+    it, so whatever a screen draws below that row is judged on its own.
     """
     parsed: List[Tuple[int, Optional[Tuple[str, str, str, bool]]]] = []
     for index, line in enumerate(lines):
@@ -144,6 +165,7 @@ def collect_numbered_block(
     run_start = None
     previous_number = None
     run_rows: List[Tuple[str, str, str, bool]] = []
+    descriptions = 0  # own-row description lines the last row has taken
 
     def close(end_index: int) -> None:
         nonlocal best, run_start, previous_number, run_rows
@@ -157,6 +179,28 @@ def collect_numbered_block(
 
     for index, row in parsed:
         if row is None:
+            if run_rows:
+                number, _label, description, _pointed = run_rows[-1]
+                text = strip_gutter(lines[index]).strip()
+                pointed = bool(text) and text[0] in _POINTER
+                bare = text.lstrip("".join(_POINTER)).strip()
+                if submit_tail and number and _SUBMIT_TAIL_ROW.match(bare):
+                    run_rows.append(("", bare, "", pointed))
+                    descriptions = 0
+                    continue
+                if (
+                    keep_descriptions
+                    and number
+                    and text
+                    and not _is_chrome(text)
+                    and descriptions < _MAX_DESCRIPTION_ROWS
+                ):
+                    joined = (
+                        f"{description} {text}".strip() if description else text
+                    )
+                    run_rows[-1] = (number, _label, joined, _pointed)
+                    descriptions += 1
+                    continue
             close(index - 1)
             continue
         number, _label, _description, _pointed = row
@@ -167,6 +211,7 @@ def collect_numbered_block(
             run_rows = []
         run_rows.append(row)
         previous_number = int(number)
+        descriptions = 0
     close(len(lines) - 1)
     return best
 

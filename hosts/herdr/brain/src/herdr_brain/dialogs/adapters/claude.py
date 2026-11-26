@@ -7,21 +7,33 @@ fixture in the same layout Claude draws):
   ``Enter to select · ↑/↓ to navigate · Esc to cancel``. The digit
   moves the pointer; Enter commits. Recipe: ``(digit, enter)``. A
   free-text row (``Type something.``, S3) is KEPT as an option with
-  ``free_text=True`` whose digit alone focuses the field — the answer
+  ``free_text=True`` whose digit alone focuses the   field — the answer
   is typed by the server's recipe, never committed on the digit. The
-  multiselect keeps its closed grammar (checkbox rows + one submit
-  row): with no real capture pinning the free-text glyph there, a
-  free-text row inside it still declines.
+  word-form multiselect keeps its closed grammar (checkbox rows + one
+  numbered submit row): a free-text row inside it still declines.
 - ``multiselect`` — AskUserQuestion with multiple selections allowed:
-  checkbox rows (``Empty checkbox``/``Filled checkbox``, or the
-  ``[ ]``/``[✔]`` glyph pair) plus the numbered ``Submit`` row, footer
-  ``Space to select · Enter to submit · … · Esc to cancel``. The digit
-  ALONE toggles its box; the pointer walks to the submit row with the
-  footer's arrows and Enter commits there. The fingerprint is taken
-  over the region with pointer and checkbox state NORMALIZED: the
-  answer choreography flips boxes and moves the pointer on purpose, so
-  the raw digest would falsify the race guard with the screen's own
-  movements (state transitions are verified by re-reading).
+  checkbox rows plus one submit row, in TWO pinned shapes. The
+  synthesized word-form (claude-multi.txt): rows ``Empty
+  checkbox``/``Filled checkbox`` (or the ``[ ]``/``[✔]`` glyph pair)
+  with the NUMBERED ``Submit`` row, footer ``Space to select · Enter
+  to submit · … · Esc to cancel``. The REAL v2.1.328 shape
+  (claude-multi-v21328.txt, provenance.md): the single-select's OWN
+  footer (``Enter to select · ↑/↓ to navigate · Esc to cancel``),
+  ``[ ]``/``[✔]`` glyph rows with each description on its OWN row, and
+  ONE UNNUMBERED submit row (``Submit``; ``Next`` on a wizard's
+  intermediate step) closing the block — there the free-text row is a
+  plain checkbox row (``4. [ ] Type something``) that the digit
+  toggles like any box; no typing recipe is claimed for it. Both
+  shapes share the measured recipe: the digit ALONE toggles its box;
+  the pointer walks to the submit row with the arrows and Enter
+  commits there (verified in the harness's own key handler for
+  2.1.328). The fingerprint is taken over the region with pointer and
+  checkbox state NORMALIZED — including the header tab chip the
+  harness flips ``☐``→``☒`` when its question becomes answered
+  mid-choreography: the answer flips boxes and moves the pointer on
+  purpose, so the raw digest would falsify the race guard with the
+  screen's own movements (state transitions are verified by
+  re-reading).
 - ``permission`` — the tool permission dialog: footer
   ``Tab to amend …`` (or a bare ``Esc to cancel`` under a
   "Do you want to" question). The digit alone commits.
@@ -57,9 +69,10 @@ from __future__ import annotations
 import re
 from typing import List, Optional, Tuple
 
-from ..model import DialogOption, StructuredDialog, fingerprint_region, unread
+from ..model import DialogOption, StructuredDialog, fingerprint_region
 from .. import menu_hints
 from ..numbered import (
+    _SUBMIT_TAIL_ROW,
     collect_numbered_block,
     is_free_text_label,
     parse_option_row,
@@ -212,7 +225,10 @@ class ClaudeAdapter(AdapterBase):
         footer = footer_line(lines)
         block = collect_numbered_block(lines)
         if block is None:
-            return None
+            # v2.1.328's own-row layout ends every default run early:
+            # the only claim left is the real multiselect shape, which
+            # carries its own (much stricter) frame.
+            return self._multiselect_v2(footer, lines)
         first, last, rows = block
 
         picker = self._model_picker(lines, footer, block)
@@ -222,6 +238,18 @@ class ClaudeAdapter(AdapterBase):
         if _MULTI_FOOTER.search(footer):
             return self._multiselect(footer, lines, first, rows)
         if _SELECT_FOOTER.search(footer):
+            # The v2.1.328 multi prints the SELECT's own footer, and its
+            # own-row descriptions are OPTIONAL: without them the default
+            # block exists and the legacy path below would misread the
+            # screen as a select (digit+enter would commit one "answer").
+            # The real shape is tried first; box rows that failed it are
+            # another version's multi, or a truncated one — fail closed,
+            # never a select guess.
+            multi = self._multiselect_v2(footer, lines)
+            if multi is not None:
+                return multi
+            if any(_checkbox_state(row[1])[1] is not None for row in rows):
+                return None
             kind = "select"
             suffix = ("enter",)
         elif _PERMISSION_FOOTER.search(footer) or (
@@ -310,6 +338,107 @@ class ClaudeAdapter(AdapterBase):
         # A multi-select step of a wizard keeps its answering kind and
         # gains the marker + stepper metadata (S4): the PWA drives it
         # with the same choices path, one step at a time.
+        step = step_marker_above(lines, first)
+        step_number, step_total = _step_meta(step)
+        return StructuredDialog(
+            agent=self.agent,
+            kind="multiselect",
+            question=question,
+            options=tuple(options),
+            fingerprint=fingerprint_region(
+                _state_normalized(dialog_region(lines, first))
+            ),
+            hint=footer,
+            step=step,
+            step_number=step_number,
+            step_total=step_total,
+            nav_keys=("up", "down"),
+            commit_keys=("enter",),
+            selected=next(
+                (position for position, row in enumerate(rows) if row[3]), None
+            ),
+        )
+
+    def _multiselect_v2(
+        self, footer, lines
+    ) -> Optional[StructuredDialog]:
+        """The REAL v2.1.328 multi-select (the LIVE capture pinned by
+        fixtures/dialogs/claude-multi-v21328.txt, provenance.md): the
+        single-select's OWN footer, ``[ ]``/``[✔]`` glyph rows with each
+        description on its OWN row, and ONE unnumbered submit row
+        (``Submit``; ``Next`` on a wizard's intermediate step) closing
+        the block.
+
+        Fail-closed: the footer gate is the select's own phrase, the
+        block must come from the own-row-description collector, every
+        numbered row must carry a box (the ``Type something`` input row
+        draws one too), and exactly one unnumbered submit tail may
+        close it. A partial shape declines — never a select guess, and
+        never a loan of the legacy word-form grammar.
+
+        The measured recipe (the harness's own key handler, read from
+        the installed 2.1.328 build): the digit ALONE toggles its box
+        wherever the pointer stands; ↓ from the last option focuses the
+        submit row and Enter commits there — the same walk the guard
+        drives for the legacy shape, so this model feeds the existing
+        ``choices`` choreography unchanged.
+        """
+        if not _SELECT_FOOTER.search(footer):
+            return None
+        block = collect_numbered_block(
+            lines, keep_free_text=True, keep_descriptions=True, submit_tail=True
+        )
+        if block is None:
+            return None
+        first, _last, rows = block
+        if rows[0][0] != "1":
+            # A run starting at any other number is a truncated or
+            # scrolled-off fragment: its question would be fabricated
+            # from body text above a mid-list row.
+            return None
+        question = question_above(lines, first)
+        if not question:
+            return None
+
+        options: List[DialogOption] = []
+        boxes = 0
+        submit = False
+        for number, label, description, _pointed in rows:
+            clean, checked = _checkbox_state(label)
+            if not clean and description:
+                # A wide gap split the box off its own label (``1. [ ]
+                # Engine``): the row is one text run and the box state
+                # belongs to the whole of it — recombine the way the
+                # legacy shape reads.
+                clean, checked = _checkbox_state(
+                    f"{label} {description}".strip()
+                )
+                description = ""
+            if checked is not None and not clean:
+                return None  # a bare box is not a label
+            if checked is None:
+                # No box on this row: only the single unnumbered submit
+                # tail is allowed; a NUMBERED row without a box is
+                # another widget's shape, never a guess.
+                if number or submit or not _SUBMIT_TAIL_ROW.match(clean):
+                    return None
+                submit = True
+                options.append(DialogOption(label=clean, keys=()))
+            else:
+                if submit:
+                    return None  # nothing rides below the submit row
+                boxes += 1
+                options.append(
+                    DialogOption(
+                        label=clean,
+                        keys=(number,),
+                        checked=checked,
+                        description=description,
+                    )
+                )
+        if boxes < 2 or not submit:
+            return None
+
         step = step_marker_above(lines, first)
         step_number, step_total = _step_meta(step)
         return StructuredDialog(
@@ -668,7 +797,10 @@ def _state_normalized(lines: List[str]) -> List[str]:
         text = re.sub(
             rf"\b(?:{_CHECKED_WORD}|{_UNCHECKED_WORD})\b", "#", line, flags=re.IGNORECASE
         )
-        text = re.sub(r"\[[ xX✔✓]?\]", "#", text)
+        text = re.sub(r"\[[ xX✔✓×√]?\]", "#", text)
+        # The header tab chip the harness flips ☐→☒ when its question
+        # becomes answered — mid-choreography, inside this region.
+        text = re.sub("[☐☒]", "#", text)
         text = re.sub(f"[{re.escape(_POINTER_GLYPHS)}]", "", text)
         normalized.append(re.sub(r"\s{2,}", " ", text).rstrip())
     return normalized

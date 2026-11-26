@@ -25,6 +25,7 @@ the picker's own region, interior bytes untouched).
 | `hermes-approval-long-full.txt` | `web/src/fixtures/panes/hermes--approval-long-full.txt` (after `5`: the Show-full row gone, `❯` on Deny) |
 | `cursor-permission-shell.txt` | `web/src/fixtures/panes/cursor--permission-shell.txt` (Cursor Agent 2026.10.14 shell-command approval) |
 | `cursor-ask-question.txt` | `web/src/fixtures/panes/cursor--ask-question.txt` (Cursor Agent 2026.10.14 agent question box, `›` on the first option) |
+| `claude-multi-v21328.txt` | LIVE capture 2026-11-26, Claude Code v2.1.328 (real pane `w11:p1X`, this machine; raw ANSI in `odd/roadmaps/parity-post/briefs/claude-multi-v21328.ansi`): the AskUserQuestion MULTI-select — tab header `←  ☐ Pruebas  ✔ Submit  →`, numbered `[ ]` rows with each description on its OWN row, the UNNUMBERED bold `Submit` row, the `───` rule with `5. Chat about this` outside the block, footer `Enter to select · ↑/↓ to navigate · Esc to cancel` (the single-select's own phrase). ANSI-stripped, kept from the tab header to the footer (interior bytes untouched); the rule + chat row stay on purpose — they are the tail traps the grammar must not claim. |
 
 Derivation: `re.sub(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07|\r", "", raw)`
 then keep from the picker's first own row (the `▔` modal edge, the

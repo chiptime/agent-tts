@@ -1,0 +1,16 @@
+←  ☐ Pruebas  ✔ Submit  →
+
+¿Qué tipos de pruebas quieres ejecutar en este repo?
+
+❯ 1. [ ] Engine (pytest)
+         Tests del motor TTS Python en engine/
+  2. [ ] Herdr Brain
+         Tests unitarios/API y JS de hosts/herdr/brain
+  3. [ ] TTS plugin (Bash)
+         Suite Bash de hosts/herdr/tts-plugin
+  4. [ ] Type something
+     Submit
+───────────────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel

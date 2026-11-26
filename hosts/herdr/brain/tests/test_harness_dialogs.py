@@ -41,6 +41,10 @@ CORPUS = {
         "claude-wizard-2of2.txt",
         "claude-wizard-multi.txt",
         "claude-multi.txt",
+        # POST-06: the REAL v2.1.328 multi-select, a LIVE capture (see
+        # fixtures/dialogs/provenance.md) — the single-select's own
+        # footer, glyph boxes, own-row descriptions, unnumbered submit.
+        "claude-multi-v21328.txt",
         # parity-f7d S2: the /model picker list and the "Switch model?"
         # confirmation, both derived from real reference captures (see
         # fixtures/dialogs/provenance.md).
@@ -292,6 +296,232 @@ class TestClaudeFreeText:
         )
 
         assert detect("claude", screen) is None
+
+
+class TestClaudeMultiV2:
+    """POST-06: the REAL Claude Code v2.1.328 multi-select, pinned by the
+    LIVE capture (fixtures/dialogs/claude-multi-v21328.txt,
+    provenance.md): the single-select's OWN footer (``Enter to select ·
+    ↑/↓ to navigate · Esc to cancel``), ``[ ]``/``[✔]`` glyph rows whose
+    descriptions ride on their OWN rows, and one UNNUMBERED bold
+    ``Submit`` row closing the block (``Next`` on a wizard's intermediate
+    step). The measured recipe (the harness's multi-select key handler,
+    read from the installed 2.1.328 bundle): a DIGIT alone toggles its
+    own box wherever the pointer stands; ↓ from the last option focuses
+    the unnumbered submit row; Enter commits there — exactly the walk
+    the guard already drives for the legacy shape, so the answer
+    choreography is unchanged.
+    """
+
+    def test_the_real_v21328_capture_reads_as_a_multiselect(self):
+        model = detect("claude", fixture("claude-multi-v21328.txt"))
+
+        assert model is not None and model.kind == "multiselect"
+        assert model.question == (
+            "¿Qué tipos de pruebas quieres ejecutar en este repo?"
+        )
+        assert labels(model) == [
+            "Engine (pytest)", "Herdr Brain", "TTS plugin (Bash)",
+            "Type something", "Submit",
+        ]
+        assert [option.checked for option in model.options] == [
+            False, False, False, False, None,
+        ]
+        assert recipes(model) == [("1",), ("2",), ("3",), ("4",), ()]
+        assert [option.description for option in model.options] == [
+            "Tests del motor TTS Python en engine/",
+            "Tests unitarios/API y JS de hosts/herdr/brain",
+            "Suite Bash de hosts/herdr/tts-plugin", "", "",
+        ]
+        assert model.nav_keys == ("up", "down")
+        assert model.commit_keys == ("enter",)
+        assert model.selected == 0
+        assert model.hint == "Enter to select · ↑/↓ to navigate · Esc to cancel"
+        assert model.payload()["recipe"] == "keys"
+        # The free-text row is a plain checkbox row here: no editor flag.
+        assert all(
+            "free_text" not in option for option in model.payload()["options"]
+        )
+
+    def test_the_fingerprint_ignores_its_own_choreography(self):
+        """Boxes flip, the pointer walks, and the header tab chip flips
+        ``☐``→``☒`` when the question becomes answered — ALL of it
+        happens DURING the answer, so none of it may falsify the race
+        guard."""
+        screen = fixture("claude-multi-v21328.txt")
+        model = detect("claude", screen)
+        moved = (
+            screen.replace("❯ 1. [ ] Engine (pytest)", "  1. [✔] Engine (pytest)")
+            .replace("  2. [ ] Herdr Brain", "❯ 2. [ ] Herdr Brain")
+            .replace("☐ Pruebas", "☒ Pruebas")
+        )
+
+        other = detect("claude", moved)
+
+        assert other is not None
+        assert other.fingerprint == model.fingerprint
+        assert [option.checked for option in other.options] == [
+            True, False, False, False, None,
+        ]
+        assert other.selected == 1
+
+    def test_without_the_submit_row_declines(self):
+        """Without the unnumbered submit row there is no verified way to
+        commit: fail closed, exactly like the legacy shape."""
+        screen = "\n".join(
+            line
+            for line in fixture("claude-multi-v21328.txt").splitlines()
+            if line.strip() != "Submit"
+        ) + "\n"
+
+        assert detect("claude", screen) is None
+
+    def test_a_numbered_row_without_a_box_declines(self):
+        screen = fixture("claude-multi-v21328.txt").replace(
+            "  2. [ ] Herdr Brain", "  2. Herdr Brain"
+        )
+
+        assert detect("claude", screen) is None
+
+    def test_boxes_stripped_is_not_claimed_as_a_select(self):
+        """The v2 footer IS the select's own: a boxless screen must not
+        fall through to a select guess carrying the checkbox grammar's
+        confidence."""
+        screen = fixture("claude-multi-v21328.txt").replace("[ ] ", "")
+
+        assert detect("claude", screen) is None
+
+    def test_a_foreign_footer_word_never_yields_the_multiselect(self):
+        screen = fixture("claude-multi-v21328.txt").replace(
+            "Enter to select", "Enter to choose"
+        )
+        model = detect("claude", screen)
+
+        assert model is None or model.kind != "multiselect"
+
+    def test_the_wizard_next_variant_reads_the_same(self):
+        """A wizard's intermediate step draws ``Next`` instead of
+        ``Submit`` — the same unnumbered row with the same keys."""
+        screen = fixture("claude-multi-v21328.txt").replace(
+            "     Submit", "     Next"
+        )
+
+        model = detect("claude", screen)
+
+        assert model is not None and model.kind == "multiselect"
+        assert labels(model)[-1] == "Next"
+        assert recipes(model) == [("1",), ("2",), ("3",), ("4",), ()]
+
+    def test_the_truncated_chat_row_alone_declines(self):
+        """The ``5. Chat about this`` row below the rule is outside the
+        dialog's own grammar: alone under the same footer it stays
+        unclaimed."""
+        screen = (
+            "  5. Chat about this\n"
+            "\n"
+            "Enter to select · ↑/↓ to navigate · Esc to cancel\n"
+        )
+
+        assert detect("claude", screen) is None
+
+
+    def test_descriptions_are_optional_the_rows_still_read(self):
+        """v2.1.328 draws descriptions only when they fit: rows without
+        one stay consecutive numbered rows, so the DEFAULT block exists
+        and the multi must be tried before the select family — a box-row
+        screen is never misread as a select (whose Enter would commit).
+        """
+        screen = "\n".join(
+            line
+            for line in fixture("claude-multi-v21328.txt").splitlines()
+            if not line.startswith(" " * 9)
+        ) + "\n"
+
+        model = detect("claude", screen)
+
+        assert model is not None and model.kind == "multiselect"
+        assert labels(model) == [
+            "Engine (pytest)", "Herdr Brain", "TTS plugin (Bash)",
+            "Type something", "Submit",
+        ]
+        assert [option.description for option in model.options] == [
+            "", "", "", "", "",
+        ]
+        assert recipes(model) == [("1",), ("2",), ("3",), ("4",), ()]
+
+    def test_one_missing_description_still_reads(self):
+        screen = fixture("claude-multi-v21328.txt").replace(
+            "         Suite Bash de hosts/herdr/tts-plugin\n", ""
+        )
+
+        model = detect("claude", screen)
+
+        assert model is not None and model.kind == "multiselect"
+        assert model.options[2].description == ""
+        assert labels(model) == [
+            "Engine (pytest)", "Herdr Brain", "TTS plugin (Bash)",
+            "Type something", "Submit",
+        ]
+
+    def test_truncated_without_submit_and_descriptions_declines(self):
+        """A truncated multi (no descriptions, no submit row) leaves a
+        default block and box rows under the select's own footer: it
+        must fail closed — never fall through to a select guess."""
+        screen = "\n".join(
+            line
+            for line in fixture("claude-multi-v21328.txt").splitlines()
+            if not line.startswith(" " * 9) and line.strip() != "Submit"
+        ) + "\n"
+
+        assert detect("claude", screen) is None
+
+    def test_a_block_not_starting_at_row_one_declines(self):
+        """A description long enough to overflow the attach bound (or a
+        scrolled-off first row) leaves the run starting at ``2.``: its
+        question would be fabricated from body text — fail closed."""
+        screen = fixture("claude-multi-v21328.txt").replace(
+            "         Tests del motor TTS Python en engine/\n",
+            "         Tests del motor TTS Python en engine/\n"
+            "         one more description line\n"
+            "         and yet another line here\n"
+            "         a fourth line beyond the bound\n",
+        )
+
+        assert detect("claude", screen) is None
+
+    def test_linux_tick_and_chip_glyphs_read_and_normalize(self):
+        """TERM=linux draws the tick ``[√]`` (and the chip ``[×]``): the
+        marked state must read, and the fingerprint must not move — the
+        choreography flips exactly these glyphs."""
+        screen = fixture("claude-multi-v21328.txt")
+        model = detect("claude", screen)
+        marked = screen.replace(
+            "❯ 1. [ ] Engine (pytest)", "❯ 1. [√] Engine (pytest)"
+        ).replace("☐ Pruebas", "[×] Pruebas")
+
+        other = detect("claude", marked)
+
+        assert other is not None
+        assert [option.checked for option in other.options] == [
+            True, False, False, False, None,
+        ]
+        assert other.fingerprint == model.fingerprint
+
+    def test_a_wide_gap_never_leaves_an_empty_label(self):
+        """``1. [ ]  Engine`` — a wide gap between the box and the label
+        splits the row in the shared grammar; the box state belongs to
+        the whole run, so the parts recombine and no option ever carries
+        an empty label."""
+        screen = fixture("claude-multi-v21328.txt").replace(
+            "❯ 1. [ ] Engine (pytest)", "❯ 1. [ ]  Engine (pytest)"
+        )
+
+        model = detect("claude", screen)
+
+        assert model is not None and model.kind == "multiselect"
+        assert model.options[0].label.startswith("Engine (pytest)")
+        assert all(option.label for option in model.options)
+        assert model.options[0].checked is False
 
 
 class TestWizardStepMetadata:
