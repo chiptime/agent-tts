@@ -16,7 +16,21 @@
 
 ---
 
-## Ruta rápida (15 minutos, happy path)
+## Guía Express de 5 Minutos (Playbook Operativo)
+
+> **Pre-requisito:** `herdr-brain` ya corre como servicio de usuario (`systemctl --user status herdr-brain`). URL: `https://<tu-tailscale-node>.ts.net` o `http://127.0.0.1:8741`.
+
+| Paso | Acción en móvil / PWA | Qué comprobar | Tiempo |
+|---|---|---|---|
+| **1. Streaming y Latencia** | Pulsa el botón **⚡ Probar voz** en el footer o di "¿qué tenemos pendiente hoy?". | El **primer fragmento suena en <2 s** (audio incremental), no al terminar toda la frase. | 1 min |
+| **2. Cancelación (Stop)** | En mitad de una respuesta larga, pulsa **■ Detener** en el teléfono. | El audio corta **en seco al instante** y el render se aborta en servidor. | 30 s |
+| **3. Anuncios en Cola** | Deja un agente trabajando en un panel vigilado mientras hablas con brain. | El aviso **no te pisa**; queda guardado en **📋 Pendientes** y se escucha al terminar. | 2 min |
+
+*Si los 3 pasos responden así, el core de voz (Hitos 1, 2 y 3) está 100% operativo.*
+
+---
+
+## Ruta detallada (15 minutos, comprobaciones completas)
 
 1. Arranca el brain (ver §Arranque). El host TTS por defecto ya habla
    protocolo-2 → audio incremental.
