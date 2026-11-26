@@ -214,26 +214,43 @@ def read_file(cwd: str, rel_path: str, cap: int = MAX_FILE_BYTES) -> dict:
         return {
             "path": rel_path or "",
             "available": False,
+            "content": None,
             "error": "the pane has no readable working directory",
         }
     shape_error = _containment_error(root, rel_path)
     if shape_error is not None:
-        return {"path": rel_path, "available": False, "error": shape_error}
+        return {
+            "path": rel_path,
+            "available": False,
+            "content": None,
+            "error": shape_error,
+        }
 
     candidate = (root / rel_path).resolve()
     try:
         root_real = root.resolve()
     except OSError:
-        return {"path": rel_path, "available": False, "error": "unresolvable workspace root"}
+        return {
+            "path": rel_path,
+            "available": False,
+            "content": None,
+            "error": "unresolvable workspace root",
+        }
     inside = candidate == root_real or root_real in candidate.parents
     if not inside:
         return {
             "path": rel_path,
             "available": False,
+            "content": None,
             "error": "path escapes the workspace (symlink or traversal)",
         }
     if not candidate.is_file():
-        return {"path": rel_path, "available": False, "error": "not a readable file"}
+        return {
+            "path": rel_path,
+            "available": False,
+            "content": None,
+            "error": "not a readable file",
+        }
     try:
         stat = candidate.stat()
         with open(candidate, "rb") as handle:
@@ -252,7 +269,12 @@ def read_file(cwd: str, rel_path: str, cap: int = MAX_FILE_BYTES) -> dict:
             handle.seek(0)
             raw = handle.read(cap + 1)
     except OSError as exc:
-        return {"path": rel_path, "available": False, "error": f"read failed: {exc}"}
+        return {
+            "path": rel_path,
+            "available": False,
+            "content": None,
+            "error": f"read failed: {exc}",
+        }
     truncated = len(raw) > cap
     if truncated:
         raw = raw[:cap]

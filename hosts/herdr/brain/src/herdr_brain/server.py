@@ -54,6 +54,7 @@ from .approval_lexicon import (
 )
 from . import access as access_module
 from . import session_launcher
+from . import workspace
 from .audit import AuditLog
 from .config import Settings
 from .consult import ConsultService
@@ -119,7 +120,13 @@ from .permissions import (
 )
 from .stt import STATE_READY, STATE_UNAVAILABLE, UNAVAILABLE_HINT, LiveTranscriber, Transcriber
 from .stt_engine import EngineTranscriber
-from .tools import RESUME_COMMANDS, RESUME_SESSION, SWITCH_MODEL, BrainTools
+from .tools import (
+    RESUME_COMMANDS,
+    RESUME_SESSION,
+    SWITCH_MODEL,
+    BrainTools,
+    CrewTargetRefused,
+)
 from .tools import status_payload as _status_payload
 from .transcripts import recent_sessions, resume_target
 from .tts import (
@@ -2519,6 +2526,91 @@ def create_app(
             return tools.screen_full(pane_id)
         except Exception:  # noqa: BLE001
             return {"pane_id": pane_id, "agent": None, "screen": None}
+
+    # ── Workspace explorer (W3-P2, doc 13 §1) ─────────────────────────
+    # Read-only file/git surface over ONE pane's cwd: the workspace
+    # module refuses any escape from that directory and bounds every
+    # read. These routes ride the default device-gated READ class (no
+    # device-exempt entry is ever added for them) and never 500s — a
+    # missing pane, an empty cwd or a git failure is an ordinary
+    # ``available: False`` payload. Remote crew panes are refused
+    # outright: the local brain cannot read another machine's
+    # filesystem, and a local fallback would read the WRONG workspace.
+
+    def _workspace_target(pane_id: Optional[str]) -> dict:
+        """Shared pane resolution for the /workspace/* routes."""
+        peer = crew_remote_peer(pane_id)
+        if peer is not None:
+            return {
+                "pane_id": pane_id,
+                "available": False,
+                "error": (
+                    "workspace explorer is local-only: a remote crew "
+                    "pane's files are not readable from this brain"
+                ),
+            }
+        try:
+            target = tools.resolve_target(pane_id)
+        except CrewTargetRefused as exc:
+            return {
+                "pane_id": pane_id,
+                "available": False,
+                "error": str(exc),
+            }
+        except Exception:  # noqa: BLE001 — a listing failure never 500s
+            return {
+                "pane_id": pane_id,
+                "available": False,
+                "error": "cannot list agent panes",
+            }
+        if target is None:
+            return {
+                "pane_id": pane_id,
+                "available": False,
+                "error": "no agent pane found",
+            }
+        if not target.cwd:
+            return {
+                "pane_id": target.pane_id,
+                "available": False,
+                "error": "the pane has no working directory",
+            }
+        return {"pane_id": target.pane_id, "cwd": target.cwd, "available": True}
+
+    @app.get("/workspace/tree")
+    def workspace_tree(pane_id: Optional[str] = None) -> dict:
+        """Bounded file tree (size + mtime) of one pane's workspace."""
+        base = _workspace_target(pane_id)
+        if not base.get("available"):
+            return {**base, "entries": [], "truncated": False}
+        payload = workspace.list_tree(base["cwd"])
+        return {**base, **payload}
+
+    @app.get("/workspace/file")
+    def workspace_file(
+        pane_id: Optional[str] = None, path: str = ""
+    ) -> dict:
+        """Traversal-safe, 64 KB-capped read of ONE workspace file."""
+        base = _workspace_target(pane_id)
+        if not base.get("available"):
+            return {**base, "path": path, "content": None}
+        payload = workspace.read_file(base["cwd"], path)
+        return {**base, **payload}
+
+    @app.get("/workspace/changes")
+    def workspace_changes(pane_id: Optional[str] = None) -> dict:
+        """``git status`` + ``git diff`` inside one pane's workspace."""
+        base = _workspace_target(pane_id)
+        if not base.get("available"):
+            return {
+                **base,
+                "is_git_repo": False,
+                "entries": [],
+                "diff": None,
+                "truncated": False,
+            }
+        payload = workspace.git_changes(base["cwd"])
+        return {**base, **payload}
 
     @app.get("/pane/{pane_id}/mirror")
     def pane_mirror(
