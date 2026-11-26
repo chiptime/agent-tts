@@ -55,3 +55,8 @@ def test_herd_rows_show_the_model_only_when_known(karaoke_app):
 def test_pane_picker_shows_the_selected_pane_model(karaoke_app):
     page = load(karaoke_app).page
     expect(page.locator("#pane-picker")).to_contain_text("claude-opus-5-5")
+
+
+def test_tab_actions_shows_the_selected_pane_model(karaoke_app):
+    page = load(karaoke_app).page
+    expect(page.locator("#tab-model-tag")).to_have_text("claude-opus-5-5")

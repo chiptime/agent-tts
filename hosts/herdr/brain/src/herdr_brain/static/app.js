@@ -146,6 +146,7 @@
   var glanceTurns = $("glance-turns");
   var glanceEmpty = $("glance-empty");
   var glanceLabel = $("glance-label");
+  var tabModelTag = $("tab-model-tag");
   var tabAgent = $("tab-agent");
   var tabTerminal = $("tab-terminal");
   var tabScreen = tabTerminal;
@@ -5676,14 +5677,27 @@
   function renderGlanceLabel() {
     var paneId = lastEffectivePane || selectedPane;
     var name = "";
+    var model = "";
+    var ctx = "";
     for (var i = 0; i < lastHerd.length; i++) {
       if (herdRowMatches(lastHerd[i], paneId)) {
         name = agentDisplayName(lastHerd[i]);
+        model = lastHerd[i].model || "";
+        ctx = formatContextWindow(lastHerd[i].context);
         break;
       }
     }
+    if (!model && lastView && lastView.status && lastView.status.model) {
+      model = lastView.status.model;
+    }
     var label = t("glance.label") + (name ? " · " + name : "");
     if (glanceLabel.textContent !== label) glanceLabel.textContent = label;
+    if (tabModelTag) {
+      var tagText = [model, ctx].filter(Boolean).join(" · ");
+      if (tabModelTag.textContent !== tagText) tabModelTag.textContent = tagText;
+      if (tagText) tabModelTag.title = tagText;
+      tabModelTag.classList.toggle("hidden", !tagText);
+    }
   }
 
   /* Keyed in-place turn list (FR10/AC7/AC8): turns are reused by content
@@ -5803,6 +5817,7 @@
     if (!view) return;
     safeRender("status", renderStatus, view.status);
     lastView = view;
+    renderGlanceLabel();
     safeRender("pending", renderPending, view);
     safeRender("screen", renderScreen, view);
     markPollOk();

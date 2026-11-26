@@ -1105,6 +1105,22 @@
       gap: 4px;
       margin-left: auto;
     }
+    .tab-model-tag {
+      flex: 0 1 auto;
+      font-size: 11px;
+      line-height: 1.2;
+      color: var(--muted);
+      background: var(--chip-bg, rgba(255, 255, 255, 0.04));
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 4px 7px;
+      max-width: 140px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      user-select: none;
+    }
+    .tab-model-tag.hidden { display: none; }
     .tab-tool-btn, .tab-search-btn {
       flex: 0 0 auto;
       padding: 0 10px;
@@ -3730,6 +3746,7 @@
       <button id="tab-terminal" class="agent-tab" type="button" role="tab" aria-selected="false" aria-controls="terminal-panel" tabindex="-1" data-i18n="tabs.terminal">Terminal</button>
       <button id="tab-files" class="agent-tab" type="button" role="tab" aria-selected="false" aria-controls="files-panel" tabindex="-1" data-i18n="tabs.files">Ficheros</button>
       <div class="tab-actions">
+        <span id="tab-model-tag" class="tab-model-tag hidden" title="Modelo del agente activo"></span>
         <button id="history-find-toggle" type="button" class="tab-tool-btn tab-search-btn" title="Buscar en la conversación" aria-label="Buscar en la conversación" data-i18n-title="history.find" data-i18n-aria-label="history.find">🔍</button>
         <button id="cockpit-fullscreen-toggle" type="button" class="tab-tool-btn tab-fullscreen-btn" title="Pantalla completa" aria-label="Pantalla completa" data-i18n-title="tabs.fullscreen" data-i18n-aria-label="tabs.fullscreen">⛶</button>
       </div>
