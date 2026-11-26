@@ -138,6 +138,8 @@ class TestCallContextEndpoint:
         assert first.json() == {
             "call_id": DEFAULT_SESSION, "pane_id": "w1:p9", "revision": 1,
             "locale": "es",
+            # W3-P1 capability hint rides the applied snapshot too.
+            "streaming_ask": True,
         }
         # A second client reads the same selection; its own later write
         # wins (last writer) and the revision only ever grows.
@@ -158,6 +160,7 @@ class TestCallContextEndpoint:
         assert cleared.json() == {
             "call_id": DEFAULT_SESSION, "pane_id": None, "revision": 2,
             "locale": "es",
+            "streaming_ask": True,
         }
 
     def test_shared_call_id_is_the_default_session_namespace(self, audio_dir, monkeypatch):
