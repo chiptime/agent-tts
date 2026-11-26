@@ -756,6 +756,8 @@ class TestDispatch:
             "get_followup_context", "end_followup",
             # S5/S7: voice switching of the call's target pane.
             "switch_session",
+            # W3-P2 S4: read-only git status + diff of a pane workspace.
+            "read_workspace_changes",
             # parity-f7c S3: the gated resume of a past conversation.
             "resume_session",
             # parity-f7d S3: the gated model switch of a pane.

@@ -1772,6 +1772,148 @@
       border-color: var(--accent);
       background: var(--chip-bg);
     }
+    /* Ficheros (W3-P2): read-only workspace explorer inside the agent
+     * drawer. The tree and the viewers scroll independently under one
+     * toolbar; the palette rides the existing theme variables. */
+    .files-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 2px 2px 6px;
+      flex: 0 0 auto;
+    }
+    .files-cwd {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      direction: rtl;
+      text-align: left;
+      font-size: 11px;
+      color: var(--muted);
+    }
+    #files-tree {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      padding: 0 2px 6px;
+      font-size: 12px;
+    }
+    .files-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      width: 100%;
+      border: 0;
+      background: none;
+      color: var(--text);
+      font: inherit;
+      text-align: left;
+      padding: 3px 6px;
+      border-radius: 6px;
+      cursor: pointer;
+      min-height: 24px;
+    }
+    .files-row:hover, .files-row:focus-visible {
+      background: var(--chip-bg);
+    }
+    .files-row.is-dir {
+      font-weight: 600;
+    }
+    .files-row .files-row-icon {
+      flex: 0 0 auto;
+      width: 14px;
+      text-align: center;
+      color: var(--muted);
+    }
+    .files-row .files-row-name {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .files-row .files-row-meta {
+      flex: 0 0 auto;
+      font-size: 10px;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+    }
+    #files-status {
+      flex: 0 0 auto;
+      padding: 2px 6px;
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .files-viewer-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 4px 6px;
+      flex: 0 0 auto;
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--muted);
+    }
+    .files-viewer-head span:first-child {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .files-viewer-head button {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel);
+      color: var(--muted);
+      cursor: pointer;
+      min-height: 24px;
+      min-width: 24px;
+    }
+    .files-meta {
+      flex: 0 0 auto;
+      font-weight: 400;
+      font-size: 10px;
+      color: var(--muted);
+    }
+    .files-pre {
+      flex: 1;
+      min-height: 0;
+      overflow: auto;
+      margin: 0;
+      padding: 8px 10px;
+      font-size: 11px;
+      line-height: 1.45;
+    }
+    #files-diff-files {
+      flex: 0 0 auto;
+      max-height: 30%;
+      overflow-y: auto;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      padding: 0 6px 6px;
+    }
+    .files-diff-chip {
+      font-size: 11px;
+      padding: 2px 8px;
+      min-height: 24px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--panel);
+      color: var(--muted);
+      cursor: pointer;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .files-diff-chip.active, .files-diff-chip:hover {
+      color: var(--accent);
+      border-color: var(--accent);
+    }
     .glabel {
       display: block;
       font-size: 11px;
@@ -3191,6 +3333,7 @@
     <div id="agent-tabs" class="agent-tabs" role="tablist" aria-label="Vistas del agente" data-i18n-aria-label="tabs.aria">
       <button id="tab-agent" class="agent-tab" type="button" role="tab" aria-selected="true" aria-controls="agent-panel" tabindex="0"><span id="glance-label" data-i18n="tabs.agent">Vista del agente</span></button>
       <button id="tab-terminal" class="agent-tab" type="button" role="tab" aria-selected="false" aria-controls="terminal-panel" tabindex="-1" data-i18n="tabs.terminal">Terminal</button>
+      <button id="tab-files" class="agent-tab" type="button" role="tab" aria-selected="false" aria-controls="files-panel" tabindex="-1" data-i18n="tabs.files">Ficheros</button>
       <div class="tab-actions">
         <button id="history-find-toggle" type="button" class="tab-tool-btn tab-search-btn" title="Buscar en la conversación" aria-label="Buscar en la conversación" data-i18n-title="history.find" data-i18n-aria-label="history.find">🔍</button>
         <button id="cockpit-fullscreen-toggle" type="button" class="tab-tool-btn tab-fullscreen-btn" title="Pantalla completa" aria-label="Pantalla completa" data-i18n-title="tabs.fullscreen" data-i18n-aria-label="tabs.fullscreen">⛶</button>
@@ -3224,6 +3367,37 @@
         <pre id="mirror-screen" class="view-screen" aria-label="Espejo de la terminal del agente" data-i18n-aria-label="panel.mirror_aria"></pre>
       </div>
       <div id="mirror-empty" class="hidden" data-i18n="panel.terminal_empty">Sin terminal que mostrar todavía</div>
+    </div>
+    <!-- Ficheros (W3-P2, doc 13 §1): read-only workspace explorer of the
+         pane's cwd — bounded tree, capped file preview and the per-file
+         git diff. Everything loads ON DEMAND (tab entry / buttons), so
+         boot-time traffic stays unchanged. -->
+    <div id="files-panel" class="agent-panel hidden" role="tabpanel" aria-labelledby="tab-files" tabindex="0">
+      <div class="files-toolbar">
+        <button id="files-refresh" type="button" class="term-tool-btn" data-i18n="files.refresh">↻ Actualizar</button>
+        <button id="files-changes" type="button" class="term-tool-btn" data-i18n="files.changes">⎇ Cambios</button>
+        <span id="files-cwd" class="files-cwd" aria-live="polite"></span>
+      </div>
+      <div id="files-status" class="hidden" role="status" aria-atomic="true"></div>
+      <div id="files-tree" aria-label="Ficheros del workspace" data-i18n-aria-label="files.tree_aria"></div>
+      <div id="files-empty" class="hidden" data-i18n="files.empty">Sin ficheros que mostrar</div>
+      <div id="files-viewer" class="hidden">
+        <div class="files-viewer-head">
+          <span id="files-viewer-path"></span>
+          <span id="files-viewer-meta" class="files-meta"></span>
+          <button id="files-viewer-close" type="button" aria-label="Cerrar vista previa" data-i18n-aria-label="files.close">✕</button>
+        </div>
+        <pre id="files-viewer-content" class="view-screen files-pre"></pre>
+      </div>
+      <div id="files-diff" class="hidden">
+        <div class="files-viewer-head">
+          <span id="files-diff-title" data-i18n="files.diff_title">Cambios sin confirmar</span>
+          <span id="files-diff-summary" class="files-meta"></span>
+          <button id="files-diff-close" type="button" aria-label="Cerrar cambios" data-i18n-aria-label="files.close">✕</button>
+        </div>
+        <div id="files-diff-files" role="listbox" aria-label="Ficheros cambiados" data-i18n-aria-label="files.diff_files_aria"></div>
+        <pre id="files-diff-content" class="view-screen files-pre"></pre>
+      </div>
     </div>
   </section>
 
@@ -3462,6 +3636,7 @@
     <script src="/dialogs.js"></script>
     <script src="/receipts.js"></script>
     <script src="/send-track.js"></script>
+    <script src="/files.js"></script>
     <script src="/push.js"></script>
     <script src="/reader.js"></script>
     <script src="/toast.js"></script>

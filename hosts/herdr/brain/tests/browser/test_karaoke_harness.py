@@ -109,7 +109,13 @@ EXPECTED_DIGESTS = {
     # i18n gain herd.peer_unreachable. app.js, index.html (/) and both
     # i18n re-pinned below.
     # Parity-w2 S8: loaded-history search controls and highlights.
-    "/": "289f75624d9de90c5daaa463a19321481833e47d88dfd48d76eb04feec13bc10",
+    # Re-pinned for W3-P2 (the «Ficheros» workspace tab): the third
+    # agent-tab button + the #files-panel markup and its styles
+    # (index.html), the on-demand /workspace/* explorer wiring and the
+    # files.js script tag (app.js), the files.* + tabs.files keys (both
+    # i18n). files.js rides the same change but is served generically,
+    # not pinned.
+    "/": "624681c90e838ebf11c2793328332b655744d42a09b0994d2ddf74647980504c",
     # send-track.js re-pinned for the correction batch (f7g): the
     # per-receipt seq guard (a lower seq is a stale delivery, ignored),
     # a start for an already-known receipt never regresses it, and a
@@ -149,7 +155,11 @@ EXPECTED_DIGESTS = {
     # (stopFailureToast pure block) branches on the server's stable
     # dialog_open reason.
     # Parity-w2 S8: history search and the adaptive state poll.
-    "/app.js": "a7d16e05ddb66196b695002c0c2796e129d00e537ac64e910d73e2bccc2d345f",
+    # app.js re-pinned for W3-P2: the Ficheros tab registration
+    # (AGENT_TABS, roving tabindex index 2), the on-demand workspace
+    # explorer (tree + preview + per-file diff, createElement/textContent
+    # only) and the tab-entry load hook.
+    "/app.js": "ad1a569efc317da38908afa42d5ab796cec1050180cb813e2481702b3ff031d7",
     "/history.js": "fa3526827b3e791bdc8f5950e398f3e318a2bff1c85ba684f0231d22d74e08d9",
     "/push.js": "28e9dd9c444f8f5948d7fc3186a461cf113c1d4de8266e9de769c0781502eaa7",
     "/receipts.js": "df01a313d8f6101bd9601d5a2a65eb420df7791c417a09e2d0d8c269a36742b0",
@@ -183,8 +193,11 @@ EXPECTED_DIGESTS = {
     # Re-pinned for parity T4/S4: newsession.err_resume_workspace.
     # Re-pinned to the merged parity wave 2 bytes (stop.dialog_open S3,
     # pair.recovered S2, history find S8, and later merged keys).
-    "/i18n/en.js": "63148c0c887ecee4811dc86c1e4b55161ec5c2bc98de3e6f0397771f90975e38",
-    "/i18n/es.js": "5caadf6361f25e0f8f74f7aa40120b38af82ca6b6abb5a763ec7d0ba344193d0",
+    # Re-pinned for W3-P2: the tabs.files and files.* keys (the
+    # «Ficheros» workspace tab label, toolbar, empty/binary/truncated
+    # notices and the diff viewer copy).
+    "/i18n/en.js": "1feddb690d6c051290652e1686bfa8d0913b46b23293d232c55d35d07b0c066c",
+    "/i18n/es.js": "179a1944e936c95c37fe1dd937184e87fb9097aa15e64f6935327348865052d3",
     "/settings.js": "1c2cf3ed92bf959c19ecde0107618b8d1ff0690d2c6fa7c842a2fdc551e05f72",
     "/updates.js": "7f87250cf6cd9c2b8944da632fe036d0c18a87a90f48f70b84e18bcd338cfa84",
     "/calls.js": "9b9ec591709d282c6e673770b2ffc1ed1562650104d8e8393126d186aa764165",

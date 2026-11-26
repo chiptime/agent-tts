@@ -21,6 +21,7 @@ PWA_STATIC_NAMES = (
     "mermaid.min.js", "mermaid-viewer.js", "tts-engine.js",
     "pairing.js", "destructive.js", "history.js", "dialogs.js",
     "receipts.js", "send-track.js", "push.js", "calls.js",
+    "files.js",
     "i18n.js", "i18n/es.js", "i18n/en.js",
     "settings.js", "updates.js", "dock.js",
     "stream-uplink.js", "stream-worklet.js",

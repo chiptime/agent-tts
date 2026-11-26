@@ -1193,6 +1193,8 @@ class TestApprovalRegression:
             "resume_session",
             # parity-f7d S3: the gated model switch of a pane.
             "switch_model",
+            # W3-P2 S4: read-only git status + diff of a pane workspace.
+            "read_workspace_changes",
         } | CONSULT_TOOL_NAMES
 
 
