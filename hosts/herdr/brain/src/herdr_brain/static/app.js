@@ -4551,16 +4551,73 @@
     });
   }
 
+  var currentTreeRows = [];
+  var currentTreeRendered = 0;
+  var TREE_CHUNK_SIZE = 100;
+  var treePagerEl = null;
+
+  function renderTreeChunk() {
+    if (treePagerEl && treePagerEl.parentNode) {
+      treePagerEl.parentNode.removeChild(treePagerEl);
+      treePagerEl = null;
+    }
+    var limit = Math.min(currentTreeRendered + TREE_CHUNK_SIZE, currentTreeRows.length);
+    for (var i = currentTreeRendered; i < limit; i++) {
+      paintTreeRow(currentTreeRows[i]);
+    }
+    currentTreeRendered = limit;
+
+    if (currentTreeRendered < currentTreeRows.length) {
+      treePagerEl = document.createElement("div");
+      treePagerEl.className = "files-pager";
+
+      var info = document.createElement("span");
+      info.className = "files-pager-info";
+      info.textContent = "Mostrando " + currentTreeRendered + " de " + currentTreeRows.length + " elementos";
+
+      var actions = document.createElement("div");
+      actions.className = "files-pager-actions";
+
+      var moreBtn = document.createElement("button");
+      moreBtn.type = "button";
+      moreBtn.className = "term-tool-btn files-pager-btn";
+      var remaining = currentTreeRows.length - currentTreeRendered;
+      moreBtn.textContent = "+ Cargar más (" + Math.min(TREE_CHUNK_SIZE, remaining) + ")";
+      moreBtn.addEventListener("click", function () {
+        renderTreeChunk();
+      });
+
+      var allBtn = document.createElement("button");
+      allBtn.type = "button";
+      allBtn.className = "term-tool-btn files-pager-btn";
+      allBtn.textContent = "Cargar todos";
+      allBtn.addEventListener("click", function () {
+        var oldChunk = TREE_CHUNK_SIZE;
+        TREE_CHUNK_SIZE = currentTreeRows.length;
+        renderTreeChunk();
+        TREE_CHUNK_SIZE = oldChunk;
+      });
+
+      actions.appendChild(moreBtn);
+      actions.appendChild(allBtn);
+      treePagerEl.appendChild(info);
+      treePagerEl.appendChild(actions);
+      filesTree.appendChild(treePagerEl);
+    }
+  }
+
   function refreshWorkspaceFiles() {
     setFilesStatus(t("files.loading"));
     filesEmpty.classList.add("hidden");
     filesViewer.classList.add("hidden");
     filesDiff.classList.add("hidden");
+    filesTree.classList.remove("hidden");
     fetchWorkspaceJson("/workspace/tree" + workspaceFilesQuery(), paintWorkspaceTree);
   }
 
   function paintWorkspaceTree(payload) {
     filesTree.textContent = "";
+    filesTree.classList.remove("hidden");
     if (!payload || !payload.available) {
       filesCwd.textContent = "";
       setFilesStatus((payload && payload.error) || t("files.error"));
@@ -4569,12 +4626,14 @@
     }
     filesCwd.textContent = payload.cwd || "";
     setFilesStatus(payload.truncated ? t("files.truncated_tree") : "");
-    var rows = window.FilesExplorer.treeRows(payload.entries);
-    if (!rows.length) {
+    currentTreeRows = window.FilesExplorer.treeRows(payload.entries);
+    currentTreeRendered = 0;
+    if (!currentTreeRows.length) {
       filesEmpty.classList.remove("hidden");
       return;
     }
-    for (var i = 0; i < rows.length; i++) paintTreeRow(rows[i]);
+    filesEmpty.classList.add("hidden");
+    renderTreeChunk();
   }
 
   function paintTreeRow(row) {

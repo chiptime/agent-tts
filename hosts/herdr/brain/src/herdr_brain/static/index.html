@@ -1846,6 +1846,37 @@
       font-size: 11px;
       color: var(--muted);
     }
+    .files-pager {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 8px 10px;
+      margin-top: 6px;
+      border-top: 1px solid var(--border);
+      font-size: 11px;
+      color: var(--muted);
+      background: var(--bg-alt, rgba(255, 255, 255, 0.03));
+      border-radius: 6px;
+    }
+    .files-pager-info {
+      flex: 1;
+      min-width: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .files-pager-actions {
+      display: flex;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+    .files-pager-btn {
+      padding: 3px 8px;
+      font-size: 11px;
+      border-radius: 4px;
+      cursor: pointer;
+    }
     #files-viewer, #files-diff {
       flex: 1;
       min-height: 0;

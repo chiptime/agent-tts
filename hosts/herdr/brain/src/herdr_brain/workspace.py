@@ -33,8 +33,8 @@ MAX_FILE_BYTES = 64 * 1024
 
 #: Hard caps for the tree walk: a pane workspace can be huge (node_modules
 #: in a monorepo), so the walk stops at these bounds and says so.
-MAX_TREE_ENTRIES = 2000
-MAX_TREE_DEPTH = 12
+MAX_TREE_ENTRIES = 5000
+MAX_TREE_DEPTH = 16
 
 #: Hard cap for git diff output (S2): a dirty workspace with a rewritten
 #: file can produce megabytes of diff; 256 KB is plenty to review changes.
@@ -53,6 +53,8 @@ IGNORED_DIRS = frozenset({
     ".ruff_cache", ".venv", "venv", ".tox", ".eggs",
     "dist", "build", ".next", ".turbo", ".cache",
     ".idea", ".vscode", ".gradle", "target",
+    ".runtime", ".agy-diagnostics", ".agy-attachments", ".codegraph",
+    ".atl", ".coverage", ".opencode", ".herdr",
 })
 
 
@@ -123,30 +125,36 @@ def list_tree(cwd: str) -> dict:
     entries: List[Dict] = []
     truncated = False
     try:
-        for dirpath, dirnames, filenames in os.walk(root):
-            rel_dir = os.path.relpath(dirpath, root)
-            depth = 0 if rel_dir == "." else rel_dir.count(os.sep) + 1
-            if depth >= MAX_TREE_DEPTH:
-                dirnames[:] = []
-                truncated = True
+        from collections import deque
+        queue = deque([("", 0)])  # (rel_dir, depth)
+        while queue:
+            rel_dir, depth = queue.popleft()
+            dirpath = os.path.join(root, rel_dir) if rel_dir else str(root)
+            try:
+                scandir_items = list(os.scandir(dirpath))
+            except OSError:
                 continue
-            # Never descend into ignored names or symlinked dirs; symlink
-            # dirs are still LISTED (see below) so the tree shows them.
-            symlinked_dirs = [
-                name for name in sorted(dirnames)
-                if name not in IGNORED_DIRS
-                and os.path.islink(os.path.join(dirpath, name))
-            ]
-            dirnames[:] = sorted(
-                name for name in dirnames
-                if name not in IGNORED_DIRS
-                and not os.path.islink(os.path.join(dirpath, name))
-            )
-            if len(entries) >= MAX_TREE_ENTRIES:
-                truncated = True
-                break
-            prefix = "" if rel_dir == "." else rel_dir.replace(os.sep, "/") + "/"
-            for name in symlinked_dirs + sorted(dirnames):
+
+            subdirs = []
+            files = []
+            for item in scandir_items:
+                if item.name in IGNORED_DIRS:
+                    continue
+                try:
+                    is_symlink = item.is_symlink()
+                    is_dir = item.is_dir(follow_symlinks=False)
+                except OSError:
+                    continue
+                if is_dir:
+                    subdirs.append((item.name, is_symlink))
+                else:
+                    files.append(item.name)
+
+            subdirs.sort(key=lambda x: x[0])
+            files.sort()
+            prefix = "" if not rel_dir else rel_dir + "/"
+
+            for name, is_symlink in subdirs:
                 if len(entries) >= MAX_TREE_ENTRIES:
                     truncated = True
                     break
@@ -161,12 +169,19 @@ def list_tree(cwd: str) -> dict:
                     "size": 0,
                     "mtime": stat.st_mtime,
                 })
-            for name in sorted(filenames):
+                if not is_symlink:
+                    if (depth + 1) < MAX_TREE_DEPTH:
+                        queue.append((prefix + name, depth + 1))
+                    else:
+                        truncated = True
+
+            if truncated:
+                break
+
+            for name in files:
                 if len(entries) >= MAX_TREE_ENTRIES:
                     truncated = True
                     break
-                if name in IGNORED_DIRS:
-                    continue
                 full = os.path.join(dirpath, name)
                 try:
                     stat = os.lstat(full)
@@ -178,6 +193,20 @@ def list_tree(cwd: str) -> dict:
                     "size": stat.st_size,
                     "mtime": stat.st_mtime,
                 })
+
+            if truncated:
+                break
+
+        def _sort_key(entry: dict) -> list:
+            parts = entry["path"].split("/")
+            is_dir = entry["type"] == "dir"
+            key = []
+            for part in parts[:-1]:
+                key.append((0, part))
+            key.append((0 if is_dir else 1, parts[-1]))
+            return key
+
+        entries.sort(key=_sort_key)
         return {
             "cwd": str(root),
             "available": True,
