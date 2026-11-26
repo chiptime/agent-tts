@@ -199,4 +199,7 @@ def pytest_runtest_protocol(item, nextitem):
             # test boot (network + ~8s subprocess per create_app);
             # quota tests inject their own runner/binary instead.
             patch.setattr("herdr_brain.quotas.ai_quotas_binary", lambda: None)
+            # Never sample real /proc, read the host's load-alerts.toml
+            # or write a real history from the suite (POST-01 isolation).
+            patch.setenv("HERDR_BRAIN_LOADMON", "off")
             return (yield)

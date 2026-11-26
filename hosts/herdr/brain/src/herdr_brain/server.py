@@ -19,6 +19,7 @@ import hmac
 import json
 import logging
 import math
+import os
 import queue as queue_module
 import re
 import subprocess
@@ -140,6 +141,7 @@ from .tts import (
     render_mp3_cancellable,
     tts_backend_status,
 )
+from .loadmon import LoadMonitor
 from .tts_daemon import DAEMON_UP, DaemonWatcher, daemon_status
 from .walky import (
     MessageNotFound as MsgNotFound,
@@ -1402,6 +1404,7 @@ def create_app(
     msg_service: Optional[WalkyService] = None,
     operator_config: Optional[OperatorConfig] = None,
     crew: Optional[CrewGateway] = None,
+    loadmon: Optional[LoadMonitor] = None,
 ) -> FastAPI:
     """Builds the FastAPI app with injectable backends for tests.
 
@@ -1881,6 +1884,25 @@ def create_app(
     )
     daemon_watcher.start()
 
+    # Machine load monitor (POST-01): rides the SAME announcement hub as
+    # the agent watcher, so a threshold crossing reaches SSE and the
+    # spoken channel like any other system announcement. Its own minute
+    # beat is deliberate — agent polls stop when every agent is dead,
+    # exactly when a starving machine is worth announcing. Off /proc
+    # hosts start no thread and /load reports the degradation.
+    if loadmon is None:
+        loadmon = LoadMonitor(cfg, hub=watcher.hub, tts_renderer=synth)
+        # Isolation gate (read at call time, like the masking switch):
+        # HERDR_BRAIN_LOADMON=off keeps the hermetic test suite and any
+        # embedding host from sampling /proc, reading the operator's
+        # load-alerts.toml or writing the state history. An INJECTED
+        # monitor is never auto-started — its owner owns its lifecycle.
+        if os.environ.get("HERDR_BRAIN_LOADMON", "").strip().lower() != "off":
+            if hasattr(loadmon, "start"):
+                loadmon.start()
+    # an INJECTED monitor is never auto-started: its owner owns its
+    # lifecycle (tests inject stubs; hosts inject pre-started monitors)
+
     # The LLM client is built lazily: /health and /tts work without
     # GLM_API_KEY, and /ask reports the missing configuration as a 503.
     llm_holder: dict = {}
@@ -1907,6 +1929,12 @@ def create_app(
     if hook_socket is not None and hasattr(app, "add_event_handler"):
         app.add_event_handler("shutdown", hook_socket.stop)
     app.state.daemon_watcher = daemon_watcher
+    app.state.loadmon = loadmon
+    if hasattr(loadmon, "stop"):
+        # a monitor that outlives the process leaks a sampler thread per
+        # create_app; the lifespan shutdown stops it (router-level API:
+        # FastAPI removed add_event_handler)
+        app.router.on_shutdown.append(loadmon.stop)
     app.state.transcriber = transcriber
     app.state.live_transcriber = live_transcriber
     app.state.approval_store = approval_store
@@ -2076,6 +2104,29 @@ def create_app(
         # The build this process serves (the same stamp as every ?v= ref
         # and the footer); the PWA compares it to notice a new deploy.
         return {"build": build}
+
+    @app.get("/load", include_in_schema=False)
+    def load_snapshot() -> dict:
+        """One machine-load snapshot from the minute sampler (POST-01).
+
+        The payload is the monitor's own view: an honest
+        ``{"available": false, ...}`` off /proc hosts, ``None`` metrics
+        before the first minute closes. Device-gated read via classify().
+        """
+        return app.state.loadmon.snapshot()
+
+    @app.get("/load/history", include_in_schema=False)
+    def load_history(
+        host: Optional[str] = Query(default=None),
+        hours: float = Query(default=24.0, gt=0, le=24),
+    ) -> dict:
+        """The rotating window of load samples (POST-01).
+
+        ``host`` defaults to the local machine; an unknown host answers
+        an honest empty window — v1 is single-machine (doc 13 §2 leaves
+        the peer relay to doc 10).
+        """
+        return app.state.loadmon.history_view(host=host, hours=hours)
 
     @app.get("/manifest.webmanifest", include_in_schema=False)
     def manifest() -> FileResponse:
