@@ -165,3 +165,28 @@ test("statusSummary of a clean repo is empty", () => {
   assert.equal(Files.statusSummary([]), "");
   assert.equal(Files.statusSummary(null), "");
 });
+
+/* ---- syntax highlighting & language detection ------------------------- */
+
+test("detectLanguage identifies extensions and special files", () => {
+  assert.equal(Files.detectLanguage("main.py"), "python");
+  assert.equal(Files.detectLanguage("src/app.js"), "javascript");
+  assert.equal(Files.detectLanguage("types.ts"), "typescript");
+  assert.equal(Files.detectLanguage("Dockerfile"), "dockerfile");
+  assert.equal(Files.detectLanguage("unknown.xyz"), "plain");
+  assert.equal(Files.detectLanguage(null), "plain");
+});
+
+test("highlightLine highlights keywords, strings, comments and numbers", () => {
+  const py = Files.highlightLine("def hello(self, count=42): # greeting", "python");
+  assert.match(py, /class="tok-kwd">def</);
+  assert.match(py, /class="tok-fn">hello</);
+  assert.match(py, /class="tok-val">self</);
+  assert.match(py, /class="tok-num">42</);
+  assert.match(py, /class="tok-cmt"># greeting</);
+
+  const js = Files.highlightLine("const msg = 'hi'; // note", "javascript");
+  assert.match(js, /class="tok-kwd">const</);
+  assert.match(js, /class="tok-str">&#39;hi&#39;</);
+  assert.match(js, /class="tok-cmt">\/\/ note</);
+});

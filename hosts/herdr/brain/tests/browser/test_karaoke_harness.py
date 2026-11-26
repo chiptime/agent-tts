@@ -115,7 +115,7 @@ EXPECTED_DIGESTS = {
     # files.js script tag (app.js), the files.* + tabs.files keys (both
     # i18n). files.js rides the same change but is served generically,
     # not pinned.
-    "/": "628e3816347699349f7cb19f0d5c4862771e8405cbe7283b1bd784676441e74b",
+    "/": "7ea20cb25c136a62ea106cdb032c821577754363e6b4b76e4ce732e9b9efe7a0",
     # send-track.js re-pinned for the correction batch (f7g): the
     # per-receipt seq guard (a lower seq is a stale delivery, ignored),
     # a start for an already-known receipt never regresses it, and a
@@ -157,7 +157,7 @@ EXPECTED_DIGESTS = {
     # Parity-w2 S8: history search and the adaptive state poll.
     # app.js re-pinned for W3-P2 (Ficheros tab & workspace explorer) and
     # W3-P1 (streaming_ask, speculative /next polling, early audio mic discipline).
-    "/app.js": "e7d1913b34ce8333318b186946043523f6e97f3c80aed714d95474484e0c03fa",
+    "/app.js": "ee9905e963c972a5e56434efdf68958278e84075a358cc2ad94b469e2f0986c8",
     "/history.js": "fa3526827b3e791bdc8f5950e398f3e318a2bff1c85ba684f0231d22d74e08d9",
     "/push.js": "28e9dd9c444f8f5948d7fc3186a461cf113c1d4de8266e9de769c0781502eaa7",
     "/receipts.js": "df01a313d8f6101bd9601d5a2a65eb420df7791c417a09e2d0d8c269a36742b0",

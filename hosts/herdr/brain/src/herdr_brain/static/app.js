@@ -4688,7 +4688,7 @@
         }
 
         btn.addEventListener("click", function () {
-          openWorkspaceFile(res.path);
+          openWorkspaceFile(res.path, res.line);
         });
 
         filesSearchResults.appendChild(btn);
@@ -4850,15 +4850,15 @@
     parent.appendChild(item);
   }
 
-  function openWorkspaceFile(path) {
+  function openWorkspaceFile(path, targetLine) {
     setFilesStatus(t("files.loading"));
     fetchWorkspaceJson(
       "/workspace/file" + workspaceFilesQuery({ path: path }),
-      function (body) { paintFileViewer(path, body); }
+      function (body) { paintFileViewer(path, body, targetLine); }
     );
   }
 
-  function paintFileViewer(path, body) {
+  function paintFileViewer(path, body, targetLine) {
     if (!body || !body.available) {
       setFilesStatus((body && body.error) || t("files.error"));
       return;
@@ -4871,7 +4871,59 @@
     if (body.truncated) bits.push(t("files.truncated"));
     if (typeof body.size === "number") bits.push(window.FilesExplorer.formatSize(body.size));
     filesViewerMeta.textContent = bits.join(" · ");
-    filesViewerContent.textContent = body.binary ? "" : (body.content || "");
+    filesViewerContent.textContent = "";
+
+    if (body.binary) {
+      var binMsg = document.createElement("div");
+      binMsg.style.padding = "20px";
+      binMsg.style.color = "var(--muted)";
+      binMsg.textContent = t("files.binary");
+      filesViewerContent.appendChild(binMsg);
+    } else {
+      var content = body.content || "";
+      var lang = (window.FilesExplorer && window.FilesExplorer.detectLanguage)
+        ? window.FilesExplorer.detectLanguage(path)
+        : "plain";
+      var lines = content.split("\n");
+      var table = document.createElement("div");
+      table.className = "files-code-table";
+      var targetNum = typeof targetLine === "number" ? targetLine : parseInt(targetLine, 10);
+      var targetEl = null;
+
+      for (var i = 0; i < lines.length; i++) {
+        var lineNum = i + 1;
+        var row = document.createElement("div");
+        row.className = "files-code-row";
+        if (targetNum && lineNum === targetNum) {
+          row.classList.add("is-target");
+          targetEl = row;
+        }
+
+        var numSpan = document.createElement("span");
+        numSpan.className = "files-code-num";
+        numSpan.textContent = String(lineNum);
+        row.appendChild(numSpan);
+
+        var textSpan = document.createElement("span");
+        textSpan.className = "files-code-text";
+        if (window.FilesExplorer && window.FilesExplorer.highlightLine) {
+          textSpan.innerHTML = window.FilesExplorer.highlightLine(lines[i], lang);
+        } else {
+          textSpan.textContent = lines[i];
+        }
+        row.appendChild(textSpan);
+
+        table.appendChild(row);
+      }
+      filesViewerContent.appendChild(table);
+
+      if (targetEl) {
+        requestAnimationFrame(function () {
+          targetEl.scrollIntoView({ block: "center", behavior: "smooth" });
+        });
+      }
+    }
+
     filesTree.classList.add("hidden");
     filesDiff.classList.add("hidden");
     filesViewer.classList.remove("hidden");

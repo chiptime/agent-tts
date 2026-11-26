@@ -2101,6 +2101,63 @@
       font-size: 11px;
       line-height: 1.45;
     }
+    .files-code-wrap {
+      flex: 1;
+      min-height: 0;
+      overflow: auto;
+      margin: 0;
+      padding: 0;
+      font-size: 11px;
+      line-height: 1.5;
+      font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    }
+    .files-code-table {
+      display: flex;
+      flex-direction: column;
+      min-width: 100%;
+      width: max-content;
+    }
+    .files-code-row {
+      display: flex;
+      flex-direction: row;
+      align-items: stretch;
+      min-height: 19px;
+      width: 100%;
+    }
+    .files-code-row:hover {
+      background: rgba(255, 255, 255, 0.04);
+    }
+    .files-code-row.is-target {
+      background: rgba(235, 180, 50, 0.22);
+      outline: 1px solid rgba(235, 180, 50, 0.45);
+    }
+    .files-code-num {
+      flex: 0 0 44px;
+      width: 44px;
+      padding: 0 10px 0 0;
+      text-align: right;
+      color: rgba(255, 255, 255, 0.3);
+      user-select: none;
+      -webkit-user-select: none;
+      border-right: 1px solid rgba(255, 255, 255, 0.08);
+      font-size: 11px;
+      line-height: 1.5;
+      cursor: default;
+    }
+    .files-code-text {
+      flex: 1;
+      padding: 0 12px;
+      white-space: pre;
+      color: #e6edf3;
+      font-size: 11px;
+      line-height: 1.5;
+    }
+    .tok-kwd { color: #e06c75; font-weight: 600; }
+    .tok-fn  { color: #61afef; }
+    .tok-str { color: #98c379; }
+    .tok-num { color: #d19a66; }
+    .tok-cmt { color: #7f848e; font-style: italic; }
+    .tok-val { color: #56b6c2; font-weight: 500; }
     #files-diff-files {
       flex: 0 0 auto;
       max-height: 30%;
@@ -3698,7 +3755,7 @@
           <span id="files-viewer-meta" class="files-meta"></span>
           <button id="files-viewer-close" type="button" aria-label="Cerrar vista previa" data-i18n-aria-label="files.close">✕</button>
         </div>
-        <pre id="files-viewer-content" class="view-screen files-pre"></pre>
+        <div id="files-viewer-content" class="view-screen files-code-wrap"></div>
       </div>
       <div id="files-diff" class="hidden">
         <div class="files-viewer-head">

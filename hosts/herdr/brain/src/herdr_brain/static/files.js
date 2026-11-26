@@ -202,6 +202,106 @@
   function singular(label) { return SINGULARS[label] || label; }
   function plural(label) { return PLURALS[label] || label + (label.charAt(label.length - 1) === "s" ? "" : "s"); }
 
+  var EXT_LANG = {
+    py: "python",
+    js: "javascript",
+    mjs: "javascript",
+    cjs: "javascript",
+    ts: "typescript",
+    tsx: "typescript",
+    jsx: "javascript",
+    json: "json",
+    html: "html",
+    htm: "html",
+    xml: "xml",
+    svg: "xml",
+    css: "css",
+    scss: "css",
+    md: "markdown",
+    markdown: "markdown",
+    sh: "bash",
+    bash: "bash",
+    zsh: "bash",
+    yml: "yaml",
+    yaml: "yaml",
+    toml: "toml",
+    ini: "ini",
+    sql: "sql",
+    go: "go",
+    rs: "rust",
+    c: "c",
+    cpp: "cpp",
+    h: "c",
+  };
+
+  function detectLanguage(filepath) {
+    if (!filepath) return "plain";
+    var dot = filepath.lastIndexOf(".");
+    if (dot === -1) {
+      var base = filepath.slice(filepath.lastIndexOf("/") + 1).toLowerCase();
+      if (base === "dockerfile") return "dockerfile";
+      if (base === "makefile") return "makefile";
+      return "plain";
+    }
+    var ext = filepath.slice(dot + 1).toLowerCase();
+    return EXT_LANG[ext] || "plain";
+  }
+
+  function escapeHtml(s) {
+    return String(s || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  function highlightLine(line, lang) {
+    if (!line) return "";
+    var commentPattern = (lang === "python" || lang === "bash" || lang === "yaml" || lang === "toml")
+      ? "(#.*$)"
+      : (lang === "sql" ? "(--.*$)" : "(\\/\\/.*$)");
+
+    var stringPattern = "(\"[^\"\\\\]*(?:\\\\.[^\"\\\\]*)*\"|'[^'\\\\]*(?:\\\\.[^'\\\\]*)*'|`[^`\\\\]*(?:\\\\.[^`\\\\]*)*`)";
+    var kwdPattern = "\\b(def|class|function|return|if|elif|else|for|while|import|from|as|in|is|not|and|or|try|except|finally|with|raise|yield|async|await|const|let|var|export|default|switch|case|break|continue|new|typeof|interface|type|enum)\\b";
+    var valPattern = "\\b(True|False|None|true|false|null|undefined|self|this)\\b";
+    var numPattern = "\\b(\\d+(?:\\.\\d+)?)\\b";
+    var fnPattern = "\\b([a-zA-Z_]\\w*)(?=\\s*\\()";
+
+    var tokenRe = new RegExp([commentPattern, stringPattern, kwdPattern, valPattern, numPattern, fnPattern].join("|"), "g");
+
+    var lastIndex = 0;
+    var html = "";
+    var match;
+
+    while ((match = tokenRe.exec(line)) !== null) {
+      if (match.index > lastIndex) {
+        html += escapeHtml(line.slice(lastIndex, match.index));
+      }
+      var tok = match[0];
+      if (match[1]) {
+        html += '<span class="tok-cmt">' + escapeHtml(tok) + '</span>';
+      } else if (match[2]) {
+        html += '<span class="tok-str">' + escapeHtml(tok) + '</span>';
+      } else if (match[3]) {
+        html += '<span class="tok-kwd">' + escapeHtml(tok) + '</span>';
+      } else if (match[4]) {
+        html += '<span class="tok-val">' + escapeHtml(tok) + '</span>';
+      } else if (match[5]) {
+        html += '<span class="tok-num">' + escapeHtml(tok) + '</span>';
+      } else if (match[6]) {
+        html += '<span class="tok-fn">' + escapeHtml(tok) + '</span>';
+      } else {
+        html += escapeHtml(tok);
+      }
+      lastIndex = tokenRe.lastIndex;
+    }
+    if (lastIndex < line.length) {
+      html += escapeHtml(line.slice(lastIndex));
+    }
+    return html;
+  }
+
   var api = {
     STATUS_LABELS: STATUS_LABELS,
     UNKNOWN_STATUS_LABEL: UNKNOWN_STATUS_LABEL,
@@ -212,6 +312,8 @@
     diffFiles: diffFiles,
     statusSummary: statusSummary,
     statusBadge: statusBadge,
+    detectLanguage: detectLanguage,
+    highlightLine: highlightLine,
   };
 
   if (typeof module !== "undefined" && module.exports) {
