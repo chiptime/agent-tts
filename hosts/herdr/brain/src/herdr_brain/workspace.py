@@ -407,7 +407,7 @@ def git_changes(
     target_ref = ref if (ref and _is_safe_ref(ref)) else None
     try:
         if target_ref is not None:
-            diff = _git("show", target_ref)
+            diff = _git("show", "-m", "--first-parent", target_ref)
         else:
             head = _git("rev-parse", "--verify", "--quiet", "HEAD")
             diff = _git("diff", "HEAD") if head.returncode == 0 else _git("diff")

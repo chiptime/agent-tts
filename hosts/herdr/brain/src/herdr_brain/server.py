@@ -463,6 +463,7 @@ _VERSIONED_REFS = (
     ('src="/dialogs.js"', 'src="/dialogs.js?v={v}"'),
     ('src="/receipts.js"', 'src="/receipts.js?v={v}"'),
     ('src="/send-track.js"', 'src="/send-track.js?v={v}"'),
+    ('src="/files.js"', 'src="/files.js?v={v}"'),
     ('src="/reader.js"', 'src="/reader.js?v={v}"'),
     ('src="/toast.js"', 'src="/toast.js?v={v}"'),
     ('src="/push.js"', 'src="/push.js?v={v}"'),

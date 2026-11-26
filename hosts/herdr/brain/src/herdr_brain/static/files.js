@@ -95,7 +95,7 @@
     var text = typeof diffText === "string" ? diffText : "";
     if (!text) return [];
     var chunks = [];
-    var parts = text.split(/^diff --git /m);
+    var parts = text.split(/^diff --(?:git|cc|combined) /m);
     for (var i = 0; i < parts.length; i++) {
       var body = parts[i];
       if (!body || !body.trim()) continue;
@@ -106,6 +106,12 @@
       } else {
         var header = body.match(/^a\/(.+?) b\//m);
         if (header) name = header[1].trim();
+        else {
+          var minus = body.match(/^--- (?:a\/)?(.+)$/m);
+          if (minus && minus[1] && minus[1] !== "/dev/null") {
+            name = minus[1].trim();
+          }
+        }
       }
       if (!name) continue;
 
@@ -125,14 +131,18 @@
           kind = "del";
           deletions++;
         } else if (
-          line.startsWith("diff --git") ||
+          line.startsWith("diff --") ||
           line.startsWith("index ") ||
           line.startsWith("--- ") ||
           line.startsWith("+++ ") ||
           line.startsWith("new file ") ||
           line.startsWith("deleted file ") ||
           line.startsWith("similarity index ") ||
-          line.startsWith("rename ")
+          line.startsWith("rename ") ||
+          line.startsWith("commit ") ||
+          line.startsWith("Author: ") ||
+          line.startsWith("Date: ") ||
+          line.startsWith("Merge: ")
         ) {
           kind = "header";
         }

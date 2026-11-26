@@ -4643,15 +4643,50 @@
     fetchWorkspaceJson("/workspace/changes" + workspaceFilesQuery(), paintWorkspaceDiff);
   }
 
+  function parseFallbackDiffLines(rawBody) {
+    if (!rawBody) return [];
+    var rawLines = rawBody.split("\n");
+    var res = [];
+    for (var j = 0; j < rawLines.length; j++) {
+      var line = rawLines[j];
+      var kind = "ctx";
+      if (line.startsWith("@@")) {
+        kind = "hunk";
+      } else if (line.startsWith("+") && !line.startsWith("+++")) {
+        kind = "add";
+      } else if (line.startsWith("-") && !line.startsWith("---")) {
+        kind = "del";
+      } else if (
+        line.startsWith("diff --") ||
+        line.startsWith("index ") ||
+        line.startsWith("--- ") ||
+        line.startsWith("+++ ") ||
+        line.startsWith("new file ") ||
+        line.startsWith("deleted file ") ||
+        line.startsWith("similarity index ") ||
+        line.startsWith("rename ") ||
+        line.startsWith("commit ") ||
+        line.startsWith("Author: ") ||
+        line.startsWith("Date: ") ||
+        line.startsWith("Merge: ")
+      ) {
+        kind = "header";
+      }
+      res.push({ kind: kind, text: line });
+    }
+    return res;
+  }
+
   function renderColoredDiff(lines, rawBody) {
     filesDiffContent.textContent = "";
-    if (!lines || !lines.length) {
+    var effLines = (lines && lines.length) ? lines : parseFallbackDiffLines(rawBody);
+    if (!effLines.length) {
       filesDiffContent.textContent = rawBody || "";
       return;
     }
     var frag = document.createDocumentFragment();
-    for (var i = 0; i < lines.length; i++) {
-      var item = lines[i];
+    for (var i = 0; i < effLines.length; i++) {
+      var item = effLines[i];
       var span = document.createElement("span");
       span.className = "diff-line diff-line-" + (item.kind || "ctx");
       span.textContent = item.text;
@@ -4734,7 +4769,9 @@
       }
     }
 
-    var chunks = window.FilesExplorer.diffFiles(body.diff);
+    var chunks = (window.FilesExplorer && typeof window.FilesExplorer.diffFiles === "function")
+      ? window.FilesExplorer.diffFiles(body.diff)
+      : [];
     if (!chunks.length) {
       if (!viewingRef && !hasWorkingChanges && body.commits && body.commits.length) {
         // Auto-load latest commit when tree is clean so user immediately sees what changed
@@ -4742,7 +4779,18 @@
         fetchWorkspaceJson("/workspace/changes" + workspaceFilesQuery({ ref: body.commits[0].sha }), paintWorkspaceDiff);
         return;
       }
-      filesDiffContent.textContent = t("files.no_diff");
+      if (body.diff && body.diff.trim()) {
+        var fallbackLines = parseFallbackDiffLines(body.diff);
+        paintDiffChip({
+          file: viewingRef ? ("Commit " + viewingRef.slice(0, 7)) : "diff",
+          body: body.diff,
+          parsedLines: fallbackLines,
+          additions: fallbackLines.filter(function (l) { return l.kind === "add"; }).length,
+          deletions: fallbackLines.filter(function (l) { return l.kind === "del"; }).length,
+        }, true);
+      } else {
+        filesDiffContent.textContent = t("files.no_diff");
+      }
     } else {
       for (var i = 0; i < chunks.length; i++) paintDiffChip(chunks[i], i === 0);
     }
