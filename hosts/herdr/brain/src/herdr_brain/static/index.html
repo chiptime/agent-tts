@@ -1840,6 +1840,163 @@
       font-style: italic;
       padding: 3px 6px;
     }
+    .files-search-box {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding: 6px 4px 8px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .files-search-input-wrap {
+      display: flex;
+      align-items: center;
+      background: var(--bg-alt, rgba(255, 255, 255, 0.04));
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 3px 8px;
+      gap: 6px;
+    }
+    .files-search-input-wrap:focus-within {
+      border-color: var(--accent, #4daafc);
+      box-shadow: 0 0 0 1px var(--accent, #4daafc);
+    }
+    .files-search-icon {
+      font-size: 11px;
+      color: var(--muted);
+      flex-shrink: 0;
+    }
+    #files-search-input {
+      flex: 1;
+      min-width: 0;
+      background: none;
+      border: 0;
+      color: var(--text);
+      font: inherit;
+      font-size: 12px;
+      outline: none;
+    }
+    #files-search-input::placeholder {
+      color: var(--muted);
+    }
+    .files-search-clear {
+      background: none;
+      border: 0;
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 12px;
+      padding: 0 2px;
+      flex-shrink: 0;
+    }
+    .files-search-clear:hover {
+      color: var(--text);
+    }
+    .files-search-modes {
+      display: flex;
+      gap: 6px;
+    }
+    .files-mode-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      font: inherit;
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: background 0.15s ease, color 0.15s ease;
+    }
+    .files-mode-chip:hover {
+      background: var(--chip-bg);
+      color: var(--text);
+    }
+    .files-mode-chip.active {
+      background: var(--accent, #4daafc);
+      color: #0b1015;
+      font-weight: 600;
+      border-color: var(--accent, #4daafc);
+    }
+    .files-search-results {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      padding: 4px 2px;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .files-result-item {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      width: 100%;
+      border: 0;
+      background: none;
+      color: var(--text);
+      font: inherit;
+      text-align: left;
+      padding: 5px 8px;
+      border-radius: 6px;
+      cursor: pointer;
+      min-height: 28px;
+      gap: 2px;
+    }
+    .files-result-item:hover, .files-result-item:focus-visible {
+      background: var(--chip-bg);
+    }
+    .files-result-head {
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+      width: 100%;
+      min-width: 0;
+    }
+    .files-result-name {
+      font-weight: 600;
+      font-size: 12px;
+      color: var(--text);
+      white-space: nowrap;
+    }
+    .files-result-line {
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+      color: var(--accent, #4daafc);
+      font-weight: 600;
+      flex-shrink: 0;
+    }
+    .files-result-path {
+      font-size: 10px;
+      color: var(--muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      flex: 1;
+      min-width: 0;
+      direction: rtl;
+      text-align: left;
+    }
+    .files-result-snippet {
+      font-family: var(--font-mono, monospace);
+      font-size: 11px;
+      color: var(--muted);
+      margin: 0;
+      padding: 2px 4px;
+      background: var(--bg-alt, rgba(255, 255, 255, 0.03));
+      border-radius: 4px;
+      width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .files-match-highlight {
+      background: rgba(255, 220, 40, 0.25);
+      color: inherit;
+      border-radius: 2px;
+      padding: 0 1px;
+    }
     .files-row .files-row-icon {
       flex: 0 0 auto;
       width: 14px;
@@ -3520,7 +3677,19 @@
         <button id="files-changes" type="button" class="term-tool-btn" data-i18n="files.changes">⎇ Cambios</button>
         <span id="files-cwd" class="files-cwd" aria-live="polite"></span>
       </div>
+      <div class="files-search-box">
+        <div class="files-search-input-wrap">
+          <span class="files-search-icon">🔍</span>
+          <input id="files-search-input" type="search" placeholder="Buscar por nombre (ej: app.js)..." autocomplete="off" spellcheck="false">
+          <button id="files-search-clear" type="button" class="files-search-clear hidden" title="Limpiar búsqueda">✕</button>
+        </div>
+        <div class="files-search-modes" role="radiogroup" aria-label="Modo de búsqueda">
+          <button id="files-mode-filename" type="button" class="files-mode-chip active" role="radio" aria-checked="true" title="Buscar por nombre de archivo (estilo Ctrl+P)">📁 Nombre</button>
+          <button id="files-mode-content" type="button" class="files-mode-chip" role="radio" aria-checked="false" title="Buscar texto en el contenido (estilo Ctrl+Shift+F)">🔤 Contenido</button>
+        </div>
+      </div>
       <div id="files-status" class="hidden" role="status" aria-atomic="true"></div>
+      <div id="files-search-results" class="files-search-results hidden" role="listbox" aria-label="Resultados de búsqueda"></div>
       <div id="files-tree" aria-label="Ficheros del workspace" data-i18n-aria-label="files.tree_aria"></div>
       <div id="files-empty" class="hidden" data-i18n="files.empty">Sin ficheros que mostrar</div>
       <div id="files-viewer" class="hidden">

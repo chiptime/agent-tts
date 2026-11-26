@@ -365,3 +365,26 @@ class TestParseStatusLine:
     def test_garbage_is_none(self):
         assert workspace._parse_status_line("") is None
         assert workspace._parse_status_line("ab") is None
+
+
+class TestSearchWorkspace:
+    def test_search_by_filename(self, ws):
+        payload = workspace.search_workspace(str(ws), query="main", mode="filename")
+        assert payload["available"] is True
+        paths = [r["path"] for r in payload["results"]]
+        assert "src/main.py" in paths
+
+    def test_search_by_content(self, ws):
+        payload = workspace.search_workspace(str(ws), query="print", mode="content")
+        assert payload["available"] is True
+        assert any(r["path"] == "src/main.py" and "print" in r["snippet"] for r in payload["results"])
+
+    def test_search_empty_query_returns_empty(self, ws):
+        payload = workspace.search_workspace(str(ws), query="")
+        assert payload["available"] is True
+        assert payload["results"] == []
+
+    def test_search_missing_cwd_is_unavailable(self, tmp_path):
+        payload = workspace.search_workspace(str(tmp_path / "gone"), query="test")
+        assert payload["available"] is False
+        assert payload["results"] == []

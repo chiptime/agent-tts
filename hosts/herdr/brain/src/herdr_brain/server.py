@@ -2630,6 +2630,22 @@ def create_app(
         payload = workspace.read_file(base["cwd"], path)
         return {**base, **payload}
 
+    @app.get("/workspace/search")
+    def workspace_search(
+        pane_id: Optional[str] = None,
+        q: str = "",
+        mode: str = "filename",
+        limit: int = 50,
+    ) -> dict:
+        """VS Code-style workspace search by filename or text content."""
+        base = _workspace_target(pane_id)
+        if not base.get("available"):
+            return {**base, "query": q, "mode": mode, "results": [], "truncated": False}
+        payload = workspace.search_workspace(
+            base["cwd"], query=q, mode=mode, limit=limit
+        )
+        return {**base, **payload}
+
     @app.get("/workspace/changes")
     def workspace_changes(
         pane_id: Optional[str] = None, ref: Optional[str] = None

@@ -508,6 +508,169 @@ def _git_failure(
     }
 
 
+def search_workspace(
+    cwd: str,
+    query: str,
+    mode: str = "filename",
+    limit: int = 50,
+    runner: Optional[Callable] = None,
+) -> dict:
+    """Search files by name or text content in the workspace (VS Code style).
+
+    Modes:
+      - 'filename': match query against relative file paths and basenames.
+      - 'content': match query against text lines inside workspace files (git grep).
+    """
+    root = resolve_pane_root(cwd)
+    if root is None:
+        return {
+            "cwd": cwd or "",
+            "available": False,
+            "query": query,
+            "mode": mode,
+            "results": [],
+            "truncated": False,
+            "error": "the pane has no readable working directory",
+        }
+
+    q = (query or "").strip()
+    if not q:
+        return {
+            "cwd": str(root),
+            "available": True,
+            "query": "",
+            "mode": mode,
+            "results": [],
+            "truncated": False,
+            "error": None,
+        }
+
+    run = runner or _runner()
+
+    def _run_git(*args: str) -> subprocess.CompletedProcess:
+        return run(
+            ["git", "-c", "core.quotepath=false", *args],
+            capture_output=True,
+            text=True,
+            timeout=GIT_TIMEOUT_S,
+            cwd=str(root),
+        )
+
+    results: List[Dict] = []
+    truncated = False
+    cap = max(1, min(limit, 200))
+
+    try:
+        is_git = False
+        try:
+            probe = _run_git("rev-parse", "--is-inside-work-tree")
+            is_git = (probe.returncode == 0 and probe.stdout.strip() == "true")
+        except (subprocess.SubprocessError, OSError):
+            is_git = False
+
+        if mode == "content":
+            if is_git:
+                res = _run_git("grep", "--untracked", "-n", "-I", "-i", "-m", "10", "-e", q, "--")
+                if res.returncode in (0, 1):
+                    for line in res.stdout.splitlines():
+                        if len(results) >= cap:
+                            truncated = True
+                            break
+                        parts = line.split(":", 2)
+                        if len(parts) >= 3:
+                            rel_path, lineno_str, snippet = parts[0], parts[1], parts[2]
+                            if any(part in IGNORED_DIRS for part in rel_path.split("/")):
+                                continue
+                            try:
+                                lineno = int(lineno_str)
+                            except ValueError:
+                                lineno = 1
+                            results.append({
+                                "path": rel_path,
+                                "name": os.path.basename(rel_path),
+                                "line": lineno,
+                                "snippet": snippet.strip()[:140],
+                            })
+            else:
+                tree = list_tree(str(root))
+                for entry in tree.get("entries", []):
+                    if entry["type"] != "file":
+                        continue
+                    if len(results) >= cap:
+                        truncated = True
+                        break
+                    full_p = root / entry["path"]
+                    try:
+                        with open(full_p, "r", encoding="utf-8", errors="replace") as f:
+                            for idx, f_line in enumerate(f, 1):
+                                if q.lower() in f_line.lower():
+                                    results.append({
+                                        "path": entry["path"],
+                                        "name": os.path.basename(entry["path"]),
+                                        "line": idx,
+                                        "snippet": f_line.strip()[:140],
+                                    })
+                                    if len(results) >= cap:
+                                        truncated = True
+                                        break
+                    except OSError:
+                        continue
+        else:
+            q_lower = q.lower()
+            all_files: List[str] = []
+            if is_git:
+                res = _run_git("ls-files", "--cached", "--others", "--exclude-standard")
+                if res.returncode == 0:
+                    all_files = res.stdout.splitlines()
+            if not all_files:
+                tree = list_tree(str(root))
+                all_files = [e["path"] for e in tree.get("entries", []) if e["type"] == "file"]
+
+            for rel_path in all_files:
+                if len(results) >= cap:
+                    truncated = True
+                    break
+                if any(part in IGNORED_DIRS for part in rel_path.split("/")):
+                    continue
+                basename = os.path.basename(rel_path)
+                if q_lower in basename.lower() or q_lower in rel_path.lower():
+                    full_p = root / rel_path
+                    size = 0
+                    mtime = 0.0
+                    try:
+                        st = full_p.stat()
+                        size = st.st_size
+                        mtime = st.st_mtime
+                    except OSError:
+                        pass
+                    results.append({
+                        "path": rel_path,
+                        "name": basename,
+                        "size": size,
+                        "mtime": mtime,
+                    })
+
+        return {
+            "cwd": str(root),
+            "available": True,
+            "query": q,
+            "mode": mode,
+            "results": results,
+            "truncated": truncated,
+            "error": None,
+        }
+    except Exception as exc:
+        return {
+            "cwd": str(root),
+            "available": False,
+            "query": q,
+            "mode": mode,
+            "results": [],
+            "truncated": False,
+            "error": f"search failed: {exc}",
+        }
+
+
 __all__ = [
     "DIFF_MAX_BYTES",
     "GIT_TIMEOUT_S",
@@ -518,4 +681,5 @@ __all__ = [
     "list_tree",
     "read_file",
     "resolve_pane_root",
+    "search_workspace",
 ]

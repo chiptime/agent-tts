@@ -177,13 +177,24 @@ class TestWorkspaceChanges:
         assert "changed" in body["diff"]
 
 
+class TestWorkspaceSearch:
+    def test_search_filename_route(self, tmp_path, monkeypatch, workspace):
+        tools = StubTools(make_agent(str(workspace)))
+        client = make_client(tmp_path, monkeypatch, tools)
+        resp = client.get("/workspace/search", params={"pane_id": "w1:p9", "q": "app.py"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["available"] is True
+        assert any(r["path"] == "app.py" for r in body["results"])
+
+
 class TestAccessClass:
     """C1 invariant: /workspace/* rides the device-gated READ class."""
 
     def test_routes_classify_as_reads(self):
         from herdr_brain.access import classify, is_device_exempt
 
-        for path in ("/workspace/tree", "/workspace/file", "/workspace/changes"):
+        for path in ("/workspace/tree", "/workspace/file", "/workspace/changes", "/workspace/search"):
             assert classify("GET", path) == "read", path
             assert not is_device_exempt("GET", path), path
             assert classify("POST", path) == "read", path  # never a write rule

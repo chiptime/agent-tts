@@ -4513,6 +4513,13 @@
   var filesDiffFiles = $("files-diff-files");
   var filesDiffContent = $("files-diff-content");
   var filesStatusMap = {};
+  var filesSearchInput = $("files-search-input");
+  var filesSearchClear = $("files-search-clear");
+  var filesModeFilename = $("files-mode-filename");
+  var filesModeContent = $("files-mode-content");
+  var filesSearchResults = $("files-search-results");
+  var filesSearchMode = "filename";
+  var filesSearchTimer = null;
 
   var filesFetchSeq = 0;  // stale-response guard: only the newest load paints
 
@@ -4551,7 +4558,146 @@
     });
   }
 
+  function setSearchMode(mode) {
+    filesSearchMode = mode;
+    if (filesModeFilename) {
+      filesModeFilename.classList.toggle("active", mode === "filename");
+      filesModeFilename.setAttribute("aria-checked", mode === "filename" ? "true" : "false");
+    }
+    if (filesModeContent) {
+      filesModeContent.classList.toggle("active", mode === "content");
+      filesModeContent.setAttribute("aria-checked", mode === "content" ? "true" : "false");
+    }
+    if (filesSearchInput) {
+      filesSearchInput.placeholder = mode === "filename"
+        ? "Buscar por nombre (ej: app.js)..."
+        : "Buscar texto en archivos (ej: list_tree)...";
+      if (filesSearchInput.value.trim()) {
+        triggerSearch();
+      }
+    }
+  }
+
+  function clearSearch() {
+    if (filesSearchInput) filesSearchInput.value = "";
+    if (filesSearchClear) filesSearchClear.classList.add("hidden");
+    if (filesSearchResults) {
+      filesSearchResults.textContent = "";
+      filesSearchResults.classList.add("hidden");
+    }
+    filesTree.classList.remove("hidden");
+    setFilesStatus("");
+  }
+
+  function triggerSearch() {
+    if (!filesSearchInput) return;
+    var query = filesSearchInput.value.trim();
+    if (!query) {
+      clearSearch();
+      return;
+    }
+    if (filesSearchClear) filesSearchClear.classList.remove("hidden");
+    setFilesStatus(t("files.loading"));
+    filesTree.classList.add("hidden");
+    filesViewer.classList.add("hidden");
+    filesDiff.classList.add("hidden");
+    if (filesSearchResults) filesSearchResults.classList.remove("hidden");
+
+    fetchWorkspaceJson(
+      "/workspace/search" + workspaceFilesQuery({ q: query, mode: filesSearchMode }),
+      paintSearchResults
+    );
+  }
+
+  function escapeHtml(text) {
+    var div = document.createElement("div");
+    div.textContent = text || "";
+    return div.innerHTML;
+  }
+
+  function highlightMatches(text, query) {
+    if (!query || !text) return escapeHtml(text);
+    var escapedQuery = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    var re = new RegExp("(" + escapedQuery + ")", "gi");
+    var parts = String(text).split(re);
+    var html = "";
+    for (var i = 0; i < parts.length; i++) {
+      if (parts[i].toLowerCase() === query.toLowerCase()) {
+        html += '<mark class="files-match-highlight">' + escapeHtml(parts[i]) + '</mark>';
+      } else {
+        html += escapeHtml(parts[i]);
+      }
+    }
+    return html;
+  }
+
+  function paintSearchResults(payload) {
+    if (!filesSearchResults) return;
+    filesSearchResults.textContent = "";
+    if (!payload || !payload.available) {
+      setFilesStatus((payload && payload.error) || t("files.error"));
+      return;
+    }
+    var results = payload.results || [];
+    var q = payload.query || "";
+    if (!results.length) {
+      setFilesStatus("Sin coincidencias para «" + q + "»");
+      return;
+    }
+    setFilesStatus(
+      results.length + " coincidencia" + (results.length > 1 ? "s" : "") +
+      (payload.truncated ? " (límite alcanzado)" : "")
+    );
+
+    for (var i = 0; i < results.length; i++) {
+      (function (res) {
+        var btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "files-result-item" + (payload.mode === "content" ? " is-content" : "");
+
+        var head = document.createElement("div");
+        head.className = "files-result-head";
+
+        var nameSpan = document.createElement("span");
+        nameSpan.className = "files-result-name";
+        nameSpan.innerHTML = highlightMatches(res.name, q);
+        head.appendChild(nameSpan);
+
+        if (typeof res.line === "number") {
+          var lineSpan = document.createElement("span");
+          lineSpan.className = "files-result-line";
+          lineSpan.textContent = ":" + res.line;
+          head.appendChild(lineSpan);
+        }
+
+        var dirName = res.path.slice(0, res.path.lastIndexOf("/"));
+        if (dirName) {
+          var pathSpan = document.createElement("span");
+          pathSpan.className = "files-result-path";
+          pathSpan.textContent = dirName;
+          head.appendChild(pathSpan);
+        }
+
+        btn.appendChild(head);
+
+        if (res.snippet) {
+          var snip = document.createElement("pre");
+          snip.className = "files-result-snippet";
+          snip.innerHTML = highlightMatches(res.snippet, q);
+          btn.appendChild(snip);
+        }
+
+        btn.addEventListener("click", function () {
+          openWorkspaceFile(res.path);
+        });
+
+        filesSearchResults.appendChild(btn);
+      })(results[i]);
+    }
+  }
+
   function refreshWorkspaceFiles() {
+    clearSearch();
     setFilesStatus(t("files.loading"));
     filesEmpty.classList.add("hidden");
     filesViewer.classList.add("hidden");
@@ -4939,11 +5085,55 @@
   filesChangesBtn.addEventListener("click", openWorkspaceChanges);
   filesViewerClose.addEventListener("click", function () {
     filesViewer.classList.add("hidden");
-    filesTree.classList.remove("hidden");
+    if (filesSearchInput && filesSearchInput.value.trim()) {
+      if (filesSearchResults) filesSearchResults.classList.remove("hidden");
+    } else {
+      filesTree.classList.remove("hidden");
+    }
   });
   filesDiffClose.addEventListener("click", function () {
     filesDiff.classList.add("hidden");
-    filesTree.classList.remove("hidden");
+    if (filesSearchInput && filesSearchInput.value.trim()) {
+      if (filesSearchResults) filesSearchResults.classList.remove("hidden");
+    } else {
+      filesTree.classList.remove("hidden");
+    }
+  });
+
+  if (filesSearchInput) {
+    filesSearchInput.addEventListener("input", function () {
+      clearTimeout(filesSearchTimer);
+      filesSearchTimer = setTimeout(triggerSearch, 180);
+    });
+    filesSearchInput.addEventListener("keydown", function (e) {
+      if (e.key === "Escape") {
+        clearSearch();
+      }
+    });
+  }
+  if (filesSearchClear) {
+    filesSearchClear.addEventListener("click", clearSearch);
+  }
+  if (filesModeFilename) {
+    filesModeFilename.addEventListener("click", function () { setSearchMode("filename"); });
+  }
+  if (filesModeContent) {
+    filesModeContent.addEventListener("click", function () { setSearchMode("content"); });
+  }
+
+  // Quick Open shortcut (Ctrl+P / Cmd+P)
+  document.addEventListener("keydown", function (e) {
+    if ((e.ctrlKey || e.metaKey) && (e.key === "p" || e.key === "P") && !e.shiftKey) {
+      var filesTabBtn = $("tab-files");
+      if (filesTabBtn) {
+        e.preventDefault();
+        filesTabBtn.click();
+        if (filesSearchInput) {
+          filesSearchInput.focus();
+          filesSearchInput.select();
+        }
+      }
+    }
   });
 
   function toggleHistoryFind(force) {
