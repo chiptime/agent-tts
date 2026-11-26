@@ -257,6 +257,15 @@ _WRITE_RULES = (
     # the mux summary) stays a read.
     ("POST", re.compile(r"^/workspace/focus$")),
     ("POST", re.compile(r"^/ask$")),
+    # POST-05 /sdk/v1: the headless SDK surface re-registers the SAME
+    # handlers under versioned paths. These entries keep the write
+    # classification (Origin rules, device gate) identical on the SDK
+    # paths — pinned to v1 on purpose: a new version opts IN, it cannot
+    # inherit the hole. The ntfy device exemption stays anchored to
+    # ^/approval/... (see _DEVICE_EXEMPT_RULES): a scripted decision
+    # carries the full device credential, never a bypass.
+    ("POST", re.compile(r"^/sdk/v1/ask$")),
+    ("POST", re.compile(r"^/sdk/v1/approval/[^/]+/action$")),
     ("POST", re.compile(r"^/transcribe$")),
     ("POST", re.compile(r"^/reset$")),
     ("GET", re.compile(r"^/call/stream$")),

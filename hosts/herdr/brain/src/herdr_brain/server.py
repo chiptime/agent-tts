@@ -80,6 +80,7 @@ from .pairing import (
     to_device_wire,
 )
 from .reader import ReaderCache, turn_id
+from .sdk import register_sdk_surface
 from .secrets_mask import mask_text
 from .send_tracking import TRACKED_OUTCOMES, SendTracker
 from .send_receipts import SendReceiptStore
@@ -5012,7 +5013,15 @@ def create_app(
         past a phone's HTTP timeout) and no TTS is rendered (nobody is
         listening on the phone). Dead gates 404 like the PWA routes.
         """
-        if cfg.approval_token:
+        # AC8 lives on the HEADERLESS channel: ntfy cannot attach a
+        # device bearer, so its route demands the ntfy token instead.
+        # The /sdk/v1 route (POST-05) is the opposite shape — a WRITE
+        # classified path behind the full doc-01 matrix with NO ntfy
+        # exemption, so the paired device bearer IS its credential;
+        # demanding the ntfy token there too would deadlock scripted
+        # decisions (the bearer would fail this 401, ?token= would fail
+        # the middleware). Each channel answers with its own factor.
+        if cfg.approval_token and not request.url.path.startswith("/sdk/"):
             presented = bearer_or_query_token(request).encode("utf-8")
             if not hmac.compare_digest(presented, cfg.approval_token.encode("utf-8")):
                 raise HTTPException(
@@ -5036,12 +5045,16 @@ def create_app(
         resolved, applied = approval_store.resolve(gate_id, _ACTION_DECISIONS[word])
         if not applied:
             raise gate_gone()
-        # ntfy cannot attach a device bearer: the line records the
+        # ntfy cannot attach a device bearer: its line records the
         # decision without a device field — a channel limitation made
-        # explicit on the line itself, never inferred.
+        # explicit on the line itself, never inferred. A caller that
+        # DOES present a paired bearer (the POST-05 /sdk/v1 surface)
+        # is attributed: the envelope omits the field only when no
+        # device identity rode the request (doc 02 T3).
         audit_log.record({
             "action": "approval.action",
             "pane_id": resolved.action.pane_id,
+            "device": audit_device(request),
             "detail": {"decision": word, "gate_id": resolved.gate_id},
         })
         if word == "approve":
@@ -5613,6 +5626,23 @@ def create_app(
         app.state.crew_handlers = crew_handlers
 
     app.state.crew = crew_gateway
+
+    # ── the headless SDK surface (POST-05) ──────────────────────────────
+    #
+    # The SAME handlers the PWA routes use, re-registered under the
+    # pinned /sdk/v1/* paths: parity of handler, access matrix and
+    # audit holds by construction (see sdk.py). Registered here — after
+    # every PWA route exists and BEFORE the static mount — so specific
+    # SDK routes win registration order over the skew catch-all and
+    # unknown SDK paths never fall through to StaticFiles.
+    register_sdk_surface(
+        app,
+        herd=herd,
+        view=view,
+        approval_current=approval_current,
+        ask=ask,
+        approval_action=approval_action,
+    )
 
     # Static PWA assets, mounted last so every API route above wins.
     app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
