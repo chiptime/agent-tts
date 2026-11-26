@@ -4512,6 +4512,10 @@
   var filesCommitBar = $("files-commit-bar");
   var filesDiffFiles = $("files-diff-files");
   var filesDiffContent = $("files-diff-content");
+  var filesSearchBox = document.querySelector(".files-search-box");
+  var filesViewerFs = $("files-viewer-fullscreen");
+  var filesDiffFs = $("files-diff-fullscreen");
+  var filesToolbarFs = $("files-fullscreen-btn");
   var filesStatusMap = {};
   var filesSearchInput = $("files-search-input");
   var filesSearchClear = $("files-search-clear");
@@ -4585,7 +4589,10 @@
       filesSearchResults.textContent = "";
       filesSearchResults.classList.add("hidden");
     }
-    filesTree.classList.remove("hidden");
+    if (filesViewer && filesViewer.classList.contains("hidden") && filesDiff && filesDiff.classList.contains("hidden")) {
+      if (filesSearchBox) filesSearchBox.classList.remove("hidden");
+      filesTree.classList.remove("hidden");
+    }
     setFilesStatus("");
   }
 
@@ -4924,6 +4931,8 @@
       }
     }
 
+    if (filesSearchBox) filesSearchBox.classList.add("hidden");
+    if (filesSearchResults) filesSearchResults.classList.add("hidden");
     filesTree.classList.add("hidden");
     filesDiff.classList.add("hidden");
     filesViewer.classList.remove("hidden");
@@ -4931,6 +4940,8 @@
 
   function openWorkspaceChanges() {
     setFilesStatus(t("files.loading"));
+    if (filesSearchBox) filesSearchBox.classList.add("hidden");
+    if (filesSearchResults) filesSearchResults.classList.add("hidden");
     filesViewer.classList.add("hidden");
     fetchWorkspaceJson("/workspace/changes" + workspaceFilesQuery(), paintWorkspaceDiff);
   }
@@ -5135,8 +5146,13 @@
 
   filesRefreshBtn.addEventListener("click", refreshWorkspaceFiles);
   filesChangesBtn.addEventListener("click", openWorkspaceChanges);
+  if (filesToolbarFs) filesToolbarFs.addEventListener("click", toggleCockpitFullscreen);
+  if (filesViewerFs) filesViewerFs.addEventListener("click", toggleCockpitFullscreen);
+  if (filesDiffFs) filesDiffFs.addEventListener("click", toggleCockpitFullscreen);
+
   filesViewerClose.addEventListener("click", function () {
     filesViewer.classList.add("hidden");
+    if (filesSearchBox) filesSearchBox.classList.remove("hidden");
     if (filesSearchInput && filesSearchInput.value.trim()) {
       if (filesSearchResults) filesSearchResults.classList.remove("hidden");
     } else {
@@ -5145,6 +5161,7 @@
   });
   filesDiffClose.addEventListener("click", function () {
     filesDiff.classList.add("hidden");
+    if (filesSearchBox) filesSearchBox.classList.remove("hidden");
     if (filesSearchInput && filesSearchInput.value.trim()) {
       if (filesSearchResults) filesSearchResults.classList.remove("hidden");
     } else {
@@ -5208,9 +5225,12 @@
   function setCockpitFullscreen(active) {
     cockpitFullscreen = !!active;
     document.body.classList.toggle("cockpit-fullscreen", cockpitFullscreen);
-    if (cockpitFsToggle) {
-      cockpitFsToggle.classList.toggle("active", cockpitFullscreen);
-      cockpitFsToggle.setAttribute("aria-pressed", cockpitFullscreen ? "true" : "false");
+    var fsBtns = [cockpitFsToggle, filesViewerFs, filesDiffFs, filesToolbarFs];
+    for (var i = 0; i < fsBtns.length; i++) {
+      if (fsBtns[i]) {
+        fsBtns[i].classList.toggle("active", cockpitFullscreen);
+        fsBtns[i].setAttribute("aria-pressed", cockpitFullscreen ? "true" : "false");
+      }
     }
     if (cockpitFullscreen) {
       if (document.documentElement.requestFullscreen && !document.fullscreenElement) {

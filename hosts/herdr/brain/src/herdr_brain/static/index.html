@@ -2085,6 +2085,19 @@
       cursor: pointer;
       min-height: 24px;
       min-width: 24px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+    }
+    .files-viewer-head button:hover {
+      color: var(--text);
+      border-color: var(--accent);
+    }
+    .files-viewer-head button.active {
+      color: var(--accent);
+      border-color: var(--accent);
+      background: rgba(77, 170, 252, 0.12);
     }
     .files-meta {
       flex: 0 0 auto;
@@ -3507,9 +3520,34 @@
       flex-direction: column !important;
     }
     body.cockpit-fullscreen #agent-panel,
-    body.cockpit-fullscreen #terminal-panel {
+    body.cockpit-fullscreen #terminal-panel,
+    body.cockpit-fullscreen #files-panel {
       height: 100% !important;
       flex: 1 !important;
+    }
+    body.cockpit-fullscreen #files-panel {
+      border: none !important;
+      border-radius: 0 !important;
+      padding: 0 !important;
+      min-height: 0 !important;
+    }
+    body.cockpit-fullscreen #files-panel:not(.hidden) {
+      display: flex !important;
+      flex-direction: column !important;
+    }
+    body.cockpit-fullscreen #files-viewer,
+    body.cockpit-fullscreen #files-diff {
+      height: 100% !important;
+      flex: 1 !important;
+      border: none !important;
+      border-radius: 0 !important;
+      min-height: 0 !important;
+    }
+    body.cockpit-fullscreen #files-panel:has(#files-viewer:not(.hidden)) .files-toolbar,
+    body.cockpit-fullscreen #files-panel:has(#files-viewer:not(.hidden)) .files-search-box,
+    body.cockpit-fullscreen #files-panel:has(#files-diff:not(.hidden)) .files-toolbar,
+    body.cockpit-fullscreen #files-panel:has(#files-diff:not(.hidden)) .files-search-box {
+      display: none !important;
     }
     body.cockpit-fullscreen #glance-turns {
       padding: max(16px, env(safe-area-inset-top, 16px)) max(18px, env(safe-area-inset-right, 18px)) max(16px, env(safe-area-inset-bottom, 16px)) max(18px, env(safe-area-inset-left, 18px)) !important;
@@ -3732,6 +3770,7 @@
       <div class="files-toolbar">
         <button id="files-refresh" type="button" class="term-tool-btn" data-i18n="files.refresh">↻ Actualizar</button>
         <button id="files-changes" type="button" class="term-tool-btn" data-i18n="files.changes">⎇ Cambios</button>
+        <button id="files-fullscreen-btn" type="button" class="term-tool-btn" title="Pantalla completa" aria-label="Pantalla completa" data-i18n-title="tabs.fullscreen" data-i18n-aria-label="tabs.fullscreen">⛶</button>
         <span id="files-cwd" class="files-cwd" aria-live="polite"></span>
       </div>
       <div class="files-search-box">
@@ -3753,6 +3792,7 @@
         <div class="files-viewer-head">
           <span id="files-viewer-path"></span>
           <span id="files-viewer-meta" class="files-meta"></span>
+          <button id="files-viewer-fullscreen" type="button" class="files-tool-btn" title="Pantalla completa" aria-label="Pantalla completa" data-i18n-title="tabs.fullscreen" data-i18n-aria-label="tabs.fullscreen">⛶</button>
           <button id="files-viewer-close" type="button" aria-label="Cerrar vista previa" data-i18n-aria-label="files.close">✕</button>
         </div>
         <div id="files-viewer-content" class="view-screen files-code-wrap"></div>
@@ -3761,6 +3801,7 @@
         <div class="files-viewer-head">
           <span id="files-diff-title" data-i18n="files.diff_title">Cambios sin confirmar</span>
           <span id="files-diff-summary" class="files-meta"></span>
+          <button id="files-diff-fullscreen" type="button" class="files-tool-btn" title="Pantalla completa" aria-label="Pantalla completa" data-i18n-title="tabs.fullscreen" data-i18n-aria-label="tabs.fullscreen">⛶</button>
           <button id="files-diff-close" type="button" aria-label="Cerrar cambios" data-i18n-aria-label="files.close">✕</button>
         </div>
         <div id="files-commit-bar" class="files-commit-bar hidden" role="tablist" aria-label="Historial de commits"></div>
