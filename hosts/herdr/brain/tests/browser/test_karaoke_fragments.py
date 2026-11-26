@@ -484,6 +484,89 @@ def test_sc05_foreign_audio_does_not_keep_owned_marker(karaoke_app):
     assert "Unrelated after-owned" in harness.page.locator("#toast").text_content()
 
 
+def test_w3p1_first_audio_plays_while_ask_is_still_generating(karaoke_app):
+    """W3-P1 AC1 (PRD-06): with the brain advertising streaming_ask, the
+    segment player polls /next from ask DISPATCH and the first segment
+    plays BEFORE the /ask response exists. The response must not restart
+    the already-polling player (no duplicate segment zero)."""
+    harness = karaoke_app(history=[turn("  Question?\n", "user"), turn(ANSWER)])
+    # The brain advertises server-side streaming on the shared context.
+    # Registered BEFORE load(): the boot GET is the client's awareness
+    # source, and the POST variant must keep it through a pane publish.
+    streaming_context = {
+        "call_id": "call-synthetic-1", "pane_id": None, "revision": 0,
+        "streaming_ask": True,
+    }
+    harness.respond("/call/context", streaming_context)
+    harness.respond("/call/context", streaming_context, method="POST")
+    harness.context.add_init_script(
+        "localStorage.setItem('herdr-brain-voice-engine', 'navegador');"
+    )
+    harness.page.set_default_timeout(2000)
+    harness.page.set_viewport_size({"width": 1000, "height": 1000})
+    harness.load()
+    expect(harness.page.locator(MAIN)).to_have_count(1)
+    harness.page.locator("#call-btn").click()
+
+    held_ask = []
+    job_box = {}
+
+    def next_reply(route):
+        after = int(parse_qs(urlsplit(route.request.url).query)["after"][0])
+        if after == -1:
+            route.fulfill(json={"seq": 0, "audio_url": "/audio/w3-first.mp3",
+                                "is_final": False})
+        elif after == 0:
+            route.fulfill(json={"seq": 1, "audio_url": "/audio/w3-last.mp3",
+                                "is_final": True})
+        else:
+            # Final-ack flush: the player stops on this reply.
+            route.fulfill(json={"wait": True, "status": "complete"})
+
+    # Registered BEFORE the ask: the speculative /next poll races the
+    # /ask handler, so a per-job registration inside it would be too late.
+    harness.context.route(harness.origin + "/speech/*/next?*", next_reply)
+
+    def hold_ask(route):
+        body = route.request.post_data_json
+        job = body["speech_request_id"]
+        job_box["job"] = job
+        harness.respond("/speech/" + job + "/cancel",
+                        {"status": "cancelled"}, method="POST")
+        held_ask.append(route)  # /ask is NEVER fulfilled until we say so
+
+    harness.context.route(harness.origin + "/ask", hold_ask)
+    harness.page.locator("#text-input").evaluate("el => { el.value = 'Streaming question'; }")
+    harness.page.locator("#text-fallback").evaluate("el => el.requestSubmit()")
+
+    # The speculative player polls /next while /ask is held...
+    harness.page.wait_for_function(
+        "() => __karaokeHarness.fetchCalls.some(p => p.includes('/next'))"
+    )
+    assert len(held_ask) == 1, "/ask must still be in flight"
+    # ...and segment zero PLAYS before the answer exists (AC1).
+    first_play = source(harness, "/w3-first.mp3")
+    assert len(held_ask) == 1, "the answer did not exist at first play"
+
+    # The response arrives late: no player restart, no duplicate audio.
+    held_ask[0].fulfill(json={
+        "answer": "Primera frase hablada. Segunda frase final.",
+        "speech": {"id": job_box["job"], "status": "delivering",
+                   "first_seq": 0, "first_sentence_ms": 940,
+                   "first_segment_ms": 1210},
+    })
+    harness.media("metadata", duration=50)
+    harness.media("end")          # segment zero consumed -> ack 0 -> poll after=0
+    source(harness, "/w3-last.mp3", previous=first_play)
+    harness.media("metadata", duration=50)
+    harness.media("end")          # final ack flush -> complete
+    idle(harness)
+    plays = harness.media("snapshot")["plays"]
+    assert sum(urlsplit(p["src"]).path.endswith("/w3-first.mp3") for p in plays) == 1, (
+        "the response must never restart the already-polling player"
+    )
+
+
 def test_sc04_late_ask_answer_cannot_revive_audio_or_microphone(karaoke_app):
     harness = app(karaoke_app)
     held_ask = []

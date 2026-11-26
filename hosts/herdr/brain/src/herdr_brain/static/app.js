@@ -495,6 +495,13 @@
    * post-write snapshot). A delayed boot response can therefore never
    * overwrite a newer explicit selection. */
   var sharedRevision = -1;
+  /* W3-P1: the brain advertises server-side GLM streaming for live-call
+   * turns (GET /call/context → streaming_ask). When set, this client
+   * starts its /speech/{id}/next polling as soon as it dispatches /ask —
+   * the server synthesizes sentence segments DURING generation, so the
+   * first audio can play before the answer exists. Absent on older
+   * brains: no speculative polls, response-time start exactly as before. */
+  var serverStreamsAsk = false;
 
   function applySharedContext(data) {
     if (!data || typeof data.call_id !== "string" || !data.call_id) return;
@@ -503,6 +510,7 @@
     try { localStorage.setItem(SESSION_KEY, sessionId); } catch (err) { /* private mode */ }
     if (stale) return;  // older snapshot: the newer local/shared intent stays
     if (typeof data.revision === "number") sharedRevision = data.revision;
+    serverStreamsAsk = data.streaming_ask === true;
     if (typeof data.pane_id === "string" && data.pane_id) {
       selectedPane = data.pane_id;
       try { localStorage.setItem(PANE_KEY, selectedPane); } catch (err) { /* private mode */ }
@@ -6967,6 +6975,18 @@
       options = Object.assign({}, options || {}, { signal: myAbort.signal });
       return fetchWithTimeout(url, options, timeoutMs);
     };
+    /* W3-P1: the brain streams tokens server-side, so sentence segments
+     * are staged WHILE /ask generates. The client minted the speech id
+     * up front, so the segment player can start long-polling /next right
+     * now — first audio lands mid-generation (~1-2 s), not at response
+     * time. Only live-call conversation turns stream server-side, and
+     * only on a brain that advertises it (streaming_ask in
+     * /call/context); speech.js needs no change — first:null starts a
+     * bare long-poll. When /ask resolves, the response handler does NOT
+     * restart an already-polling player for the same id. */
+    if (serverStreamsAsk && inCall && speech.speech_request_id) {
+      segmentPlayer.start({ id: speech.speech_request_id, sessionId: sessionId, first: null });
+    }
     /* /ask spans the FULL consult turn (up to 60 s engine budget plus
      * model + TTS shaping) — the fixed 90 s policy AND the request
      * shape live in consult.js (Consult.requestAsk, tested in
@@ -7020,25 +7040,44 @@
           // A chunk tap may have cancelled this identity while /ask was in
           // flight. Keep its answer, but never revive the retired audio job.
           if (!speech.speech_request_id || speechCtl.activeId() === speech.speech_request_id) {
+            /* W3-P1: a speculative player may already be polling this id
+             * since ask dispatch — restarting it would reset the segment
+             * cursors and double-enqueue segment zero. */
+            var alreadyPolling = !!speech.speech_request_id &&
+              segmentPlayer.state().id === speech.speech_request_id &&
+              !segmentPlayer.state().stopped;
+            if (data.speech && typeof data.speech.first_sentence_ms === "number") {
+              liveTiming = liveTiming || {};
+              liveTiming.serverFirstSentenceMs = data.speech.first_sentence_ms;
+            }
+            if (data.speech && typeof data.speech.first_segment_ms === "number") {
+              liveTiming = liveTiming || {};
+              liveTiming.serverFirstSegmentMs = data.speech.first_segment_ms;
+            }
             if (data.speech && data.speech.status === "delivering") {
               /* Protocol-2 streaming turn: the answer arrives as segments
                * through /speech/{id}/next and enters the SAME sequential
                * queue (seq rides each item; onAudioEnded advances the ack).
                * The enqueue below still covers legacy turns AND v1-degraded
                * identified turns (full file with audio_url). */
-              segmentPlayer.start({ id: speech.speech_request_id, sessionId: sessionId,
-                first: data.audio_url && data.speech.first_seq === 0 ? {
-                  seq: 0, audio_url: data.audio_url, is_final: !!data.speech.first_is_final
-                } : null });
+              if (!alreadyPolling) {
+                segmentPlayer.start({ id: speech.speech_request_id, sessionId: sessionId,
+                  first: data.audio_url && data.speech.first_seq === 0 ? {
+                    seq: 0, audio_url: data.audio_url, is_final: !!data.speech.first_is_final
+                  } : null });
+              }
               stashLiveTurnTimingAudio();  // PRD-02: playback initiated
             } else if (data.audio_url) {
+              if (alreadyPolling) segmentPlayer.stop("response-shape");
               enqueueAudio(data.audio_url, null, speech.speech_request_id);
               stashLiveTurnTimingAudio();  // PRD-02: playback initiated
             } else {
+              if (alreadyPolling) segmentPlayer.stop("response-shape");
               speechCtl.release(speech.speech_request_id);
               if (!data.approval) afterAnswer();
             }
-          }          if (data.approval) {
+          }
+          if (data.approval) {
             // A gate opened (PRD §4): enter confirming with the countdown
             // while the spoken echo ("… ¿Se envía?") plays through the
             // normal queue; onAudioEnded re-arms the mic under confirming.
@@ -8274,7 +8313,15 @@
     liveTiming.pending = {
       reason: "audio",
       ask_audio_ms: liveTimingDelta(liveTiming.askDoneAt, at),
-      total_ms: liveTimingDelta(liveTiming.closeAt, at)
+      total_ms: liveTimingDelta(liveTiming.closeAt, at),
+      /* W3-P1 (PRD-02/FR-07): the brain's own first-sentence and
+       * first-segment times for this turn (ms from turn start) ride the
+       * playback report so the streaming improvement against the
+       * baseline is measurable. Older brains never set them: -1. */
+      first_sentence_ms: (liveTiming.serverFirstSentenceMs != null)
+        ? liveTiming.serverFirstSentenceMs : -1,
+      first_segment_ms: (liveTiming.serverFirstSegmentMs != null)
+        ? liveTiming.serverFirstSegmentMs : -1
     };
   }
 

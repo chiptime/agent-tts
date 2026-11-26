@@ -2376,7 +2376,12 @@ def create_app(
                     detail="pane_id must be a short single-line pane identifier",
                 )
         locale = body.locale.strip().lower() if body.locale else None
-        return call_context_store.select(pane, locale=locale)
+        payload = call_context_store.select(pane, locale=locale)
+        # W3-P1: the POST response IS the applied snapshot — it must carry
+        # the same capability hint as the GET, or a client's pane publish
+        # would flip its streaming awareness back off.
+        payload["streaming_ask"] = True
+        return payload
 
     @app.get("/state")
     def state() -> dict:
