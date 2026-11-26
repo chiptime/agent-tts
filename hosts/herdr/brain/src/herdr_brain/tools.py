@@ -96,6 +96,7 @@ from .view import (
     selection_from_runs,
     truncate_text,
 )
+from .workspace import git_changes
 
 MAX_SEND_EXCERPT = 500
 # Direct user replies (reply_to_pane) do not wait for the agent to finish:
@@ -2971,6 +2972,45 @@ class BrainTools:
             payload["detail"] = "0 open sessions."
         return json.dumps(payload, ensure_ascii=False)
 
+    def read_workspace_changes(
+        self,
+        target: Optional[AgentInfo] = None,
+        pane_id: Optional[str] = None,
+    ) -> str:
+        """Git status + diff of one pane's workspace (W3-P2 S4, doc 13 §1).
+
+        The voice read of the SAME surface the PWA's Ficheros tab shows:
+        the payload is exactly what GET /workspace/changes serves —
+        ``available``, ``is_git_repo``, bounded status ``entries`` and a
+        size-capped ``diff`` from the read-only workspace module. The
+        read never escapes the pane cwd and never mutates anything (the
+        module spawns only ``git status``/``git diff``/``rev-parse``).
+
+        ``pane_id`` consults ANOTHER currently-open pane instead, with
+        read_transcript's discipline: it resolves uniquely against a
+        fresh pane listing and never falls back — unknown, stale,
+        ambiguous or unavailable ids fail closed as ``available: False``
+        payloads rather than silently reading the selected pane. The
+        consult changes no selection and no write target.
+        """
+        if pane_id:
+            active, error = self._resolve_open_pane(pane_id)
+            if active is None:
+                return json.dumps(
+                    {"available": False, "error": error or f"error: unknown pane {pane_id}"},
+                    ensure_ascii=False,
+                )
+        else:
+            active = self._resolve(target)
+        if active is None:
+            return json.dumps(
+                {"available": False, "error": "error: no active agent pane"},
+                ensure_ascii=False,
+            )
+        payload = git_changes(active.cwd)
+        payload["pane_id"] = active.pane_id
+        return json.dumps(payload, ensure_ascii=False)
+
     def read_transcript(
         self,
         n_turns: int = 10,
@@ -3875,6 +3915,7 @@ class BrainTools:
         handler: Optional[Callable] = {
             "get_status": self.get_status,
             "list_open_sessions": self.list_open_sessions,
+            "read_workspace_changes": self.read_workspace_changes,
             "read_transcript": self.read_transcript,
             "read_screen": self.read_screen,
             "send_to_session": self.send_to_session,
@@ -3988,6 +4029,16 @@ class BrainTools:
                     ),
                     ensure_ascii=False,
                 )
+            if name == "read_workspace_changes":
+                # Same pane_id discipline as read_transcript: a model-
+                # named pane_id retargets the READ only, resolved
+                # fail-closed inside the tool; strings only.
+                pane_id = arguments.get("pane_id")
+                if pane_id is not None and not isinstance(pane_id, str):
+                    raise TypeError("pane_id must be a string")
+                if pane_id is not None:
+                    pane_id = pane_id.strip() or None
+                return handler(target, pane_id=pane_id)
             if name == "read_transcript":
                 # S2/S4 pane consult: a model-named pane_id retargets the
                 # READ only (resolved fail-closed inside the tool); absent,
@@ -4239,6 +4290,37 @@ TOOLS_SCHEMA = [
                     "n_lines": {
                         "type": "integer",
                         "description": "Visible lines to read, capped at 60 (default 40).",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_workspace_changes",
+            "description": (
+                "Read-only git status + diff of the SELECTED session's workspace "
+                "(what files changed, staged/untracked entries and the diff body). "
+                "Use it for 'what changed in this repo?', 'did the agent touch any "
+                "files?', 'summarise the pending changes'. To consult a DIFFERENT "
+                "open pane's workspace, pass its pane_id exactly as "
+                "list_open_sessions reported it; unknown or closed ids fail — "
+                "relay the error, never silently read the selected pane instead. "
+                "This never mutates the repository and never sends anything to "
+                "the agent session."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pane_id": {
+                        "type": "string",
+                        "description": (
+                            "Exact pane_id from list_open_sessions to read "
+                            "another open pane's workspace. Omit for the "
+                            "selected session."
+                        ),
                     },
                 },
                 "required": [],
