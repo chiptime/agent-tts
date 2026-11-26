@@ -4551,68 +4551,13 @@
     });
   }
 
-  var currentTreeRows = [];
-  var currentTreeRendered = 0;
-  var TREE_CHUNK_SIZE = 100;
-  var treePagerEl = null;
-
-  function renderTreeChunk() {
-    if (treePagerEl && treePagerEl.parentNode) {
-      treePagerEl.parentNode.removeChild(treePagerEl);
-      treePagerEl = null;
-    }
-    var limit = Math.min(currentTreeRendered + TREE_CHUNK_SIZE, currentTreeRows.length);
-    for (var i = currentTreeRendered; i < limit; i++) {
-      paintTreeRow(currentTreeRows[i]);
-    }
-    currentTreeRendered = limit;
-
-    if (currentTreeRendered < currentTreeRows.length) {
-      treePagerEl = document.createElement("div");
-      treePagerEl.className = "files-pager";
-
-      var info = document.createElement("span");
-      info.className = "files-pager-info";
-      info.textContent = "Mostrando " + currentTreeRendered + " de " + currentTreeRows.length + " elementos";
-
-      var actions = document.createElement("div");
-      actions.className = "files-pager-actions";
-
-      var moreBtn = document.createElement("button");
-      moreBtn.type = "button";
-      moreBtn.className = "term-tool-btn files-pager-btn";
-      var remaining = currentTreeRows.length - currentTreeRendered;
-      moreBtn.textContent = "+ Cargar más (" + Math.min(TREE_CHUNK_SIZE, remaining) + ")";
-      moreBtn.addEventListener("click", function () {
-        renderTreeChunk();
-      });
-
-      var allBtn = document.createElement("button");
-      allBtn.type = "button";
-      allBtn.className = "term-tool-btn files-pager-btn";
-      allBtn.textContent = "Cargar todos";
-      allBtn.addEventListener("click", function () {
-        var oldChunk = TREE_CHUNK_SIZE;
-        TREE_CHUNK_SIZE = currentTreeRows.length;
-        renderTreeChunk();
-        TREE_CHUNK_SIZE = oldChunk;
-      });
-
-      actions.appendChild(moreBtn);
-      actions.appendChild(allBtn);
-      treePagerEl.appendChild(info);
-      treePagerEl.appendChild(actions);
-      filesTree.appendChild(treePagerEl);
-    }
-  }
-
   function refreshWorkspaceFiles() {
     setFilesStatus(t("files.loading"));
     filesEmpty.classList.add("hidden");
     filesViewer.classList.add("hidden");
     filesDiff.classList.add("hidden");
     filesTree.classList.remove("hidden");
-    fetchWorkspaceJson("/workspace/tree" + workspaceFilesQuery(), paintWorkspaceTree);
+    fetchWorkspaceJson("/workspace/tree" + workspaceFilesQuery({ depth: "1" }), paintWorkspaceTree);
   }
 
   function paintWorkspaceTree(payload) {
@@ -4626,31 +4571,119 @@
     }
     filesCwd.textContent = payload.cwd || "";
     setFilesStatus(payload.truncated ? t("files.truncated_tree") : "");
-    currentTreeRows = window.FilesExplorer.treeRows(payload.entries);
-    currentTreeRendered = 0;
-    if (!currentTreeRows.length) {
+    var rows = window.FilesExplorer.treeRows(payload.entries);
+    if (!rows.length) {
       filesEmpty.classList.remove("hidden");
       return;
     }
     filesEmpty.classList.add("hidden");
-    renderTreeChunk();
+    for (var i = 0; i < rows.length; i++) {
+      paintTreeRow(rows[i], filesTree);
+    }
   }
 
-  function paintTreeRow(row) {
-    /* Directories are structure (the server walk already descends them);
-     * only files open a preview. Padding indents by path depth. */
-    var item = document.createElement(row.type === "dir" ? "div" : "button");
-    item.className = "files-row" + (row.type === "dir" ? " is-dir" : "");
-    if (row.type === "file") {
+  function paintTreeRow(row, container) {
+    var parent = container || filesTree;
+    if (row.type === "dir") {
+      var group = document.createElement("div");
+      group.className = "files-row-group";
+
+      var item = document.createElement("button");
       item.type = "button";
-      item.addEventListener("click", function () { openWorkspaceFile(row.path); });
+      item.className = "files-row is-dir";
+      item.setAttribute("aria-expanded", "false");
+
+      var icon = document.createElement("span");
+      icon.className = "files-row-icon";
+      icon.textContent = "▸";
+
+      var name = document.createElement("span");
+      name.className = "files-row-name";
+      name.textContent = row.name;
+
+      var status = filesStatusMap[row.path];
+      if (status) {
+        var badge = window.FilesExplorer.statusBadge(status);
+        var bEl = document.createElement("span");
+        bEl.className = "diff-badge files-row-badge " + badge.cls;
+        bEl.textContent = badge.code;
+        name.appendChild(bEl);
+      }
+
+      var meta = document.createElement("span");
+      meta.className = "files-row-meta";
+      meta.textContent = [row.size, row.mtime].filter(Boolean).join(" · ");
+
+      item.appendChild(icon);
+      item.appendChild(name);
+      item.appendChild(meta);
+      item.style.paddingLeft = (6 + row.depth * 14) + "px";
+
+      var children = document.createElement("div");
+      children.className = "files-children hidden";
+
+      item.addEventListener("click", function () {
+        var isHidden = children.classList.contains("hidden");
+        if (isHidden) {
+          if (children.hasChildNodes()) {
+            children.classList.remove("hidden");
+            icon.textContent = "▾";
+            item.setAttribute("aria-expanded", "true");
+          } else {
+            icon.textContent = "…";
+            fetchWorkspaceJson(
+              "/workspace/tree" + workspaceFilesQuery({ path: row.path, depth: "1" }),
+              function (childPayload) {
+                if (!childPayload || !childPayload.available) {
+                  icon.textContent = "▸";
+                  return;
+                }
+                var childRows = window.FilesExplorer.treeRows(childPayload.entries);
+                children.textContent = "";
+                if (!childRows.length) {
+                  var emptyNotice = document.createElement("div");
+                  emptyNotice.className = "files-empty-dir";
+                  emptyNotice.textContent = "(vacío)";
+                  emptyNotice.style.paddingLeft = (6 + (row.depth + 1) * 14) + "px";
+                  children.appendChild(emptyNotice);
+                } else {
+                  for (var k = 0; k < childRows.length; k++) {
+                    paintTreeRow(childRows[k], children);
+                  }
+                }
+                children.classList.remove("hidden");
+                icon.textContent = "▾";
+                item.setAttribute("aria-expanded", "true");
+              }
+            );
+          }
+        } else {
+          children.classList.add("hidden");
+          icon.textContent = "▸";
+          item.setAttribute("aria-expanded", "false");
+        }
+      });
+
+      group.appendChild(item);
+      group.appendChild(children);
+      parent.appendChild(group);
+      return;
     }
+
+    /* Files open preview on click. Padding indents by path depth. */
+    var item = document.createElement("button");
+    item.type = "button";
+    item.className = "files-row";
+    item.addEventListener("click", function () { openWorkspaceFile(row.path); });
+
     var icon = document.createElement("span");
     icon.className = "files-row-icon";
-    icon.textContent = row.type === "dir" ? "▸" : "·";
+    icon.textContent = "·";
+
     var name = document.createElement("span");
     name.className = "files-row-name";
     name.textContent = row.name;
+
     var status = filesStatusMap[row.path];
     if (status) {
       var badge = window.FilesExplorer.statusBadge(status);
@@ -4659,14 +4692,16 @@
       bEl.textContent = badge.code;
       name.appendChild(bEl);
     }
+
     var meta = document.createElement("span");
     meta.className = "files-row-meta";
     meta.textContent = [row.size, row.mtime].filter(Boolean).join(" · ");
+
     item.appendChild(icon);
     item.appendChild(name);
     item.appendChild(meta);
     item.style.paddingLeft = (6 + row.depth * 14) + "px";
-    filesTree.appendChild(item);
+    parent.appendChild(item);
   }
 
   function openWorkspaceFile(path) {

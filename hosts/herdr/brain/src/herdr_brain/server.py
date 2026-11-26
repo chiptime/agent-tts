@@ -2607,12 +2607,16 @@ def create_app(
         return {"pane_id": target.pane_id, "cwd": target.cwd, "available": True}
 
     @app.get("/workspace/tree")
-    def workspace_tree(pane_id: Optional[str] = None) -> dict:
+    def workspace_tree(
+        pane_id: Optional[str] = None,
+        path: str = "",
+        depth: Optional[int] = None,
+    ) -> dict:
         """Bounded file tree (size + mtime) of one pane's workspace."""
         base = _workspace_target(pane_id)
         if not base.get("available"):
             return {**base, "entries": [], "truncated": False}
-        payload = workspace.list_tree(base["cwd"])
+        payload = workspace.list_tree(base["cwd"], subpath=path, depth=depth)
         return {**base, **payload}
 
     @app.get("/workspace/file")

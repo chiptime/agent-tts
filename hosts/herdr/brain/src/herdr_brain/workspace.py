@@ -102,7 +102,7 @@ def _containment_error(root: Path, rel_path: str) -> Optional[str]:
     return None
 
 
-def list_tree(cwd: str) -> dict:
+def list_tree(cwd: str, subpath: str = "", depth: Optional[int] = None) -> dict:
     """Bounded file tree of the pane cwd, size and mtime included (S1).
 
     Returns ``{cwd, available, entries, truncated, error?}``. Entries are
@@ -112,6 +112,9 @@ def list_tree(cwd: str) -> dict:
     into — a symlink to anywhere could otherwise carry the walk outside
     the pane cwd. Hidden files ARE listed (dotfiles are workspace files
     too); only :data:`IGNORED_DIRS` names are skipped.
+
+    If ``subpath`` is given, only descendants of that directory are listed.
+    If ``depth`` is given, traversal stops at that relative depth limit.
     """
     root = resolve_pane_root(cwd)
     if root is None:
@@ -122,13 +125,38 @@ def list_tree(cwd: str) -> dict:
             "truncated": False,
             "error": "the pane has no readable working directory",
         }
+
+    start_rel = ""
+    if subpath and subpath.strip():
+        shape_err = _containment_error(root, subpath)
+        if shape_err is not None:
+            return {
+                "cwd": str(root),
+                "available": False,
+                "entries": [],
+                "truncated": False,
+                "error": shape_err,
+            }
+        clean_sub = subpath.strip("/\\")
+        candidate = (root / clean_sub).resolve()
+        if not candidate.is_dir() or not (candidate == root or root in candidate.parents):
+            return {
+                "cwd": str(root),
+                "available": False,
+                "entries": [],
+                "truncated": False,
+                "error": "directory not found or outside workspace",
+            }
+        start_rel = clean_sub
+
     entries: List[Dict] = []
     truncated = False
+    max_depth = depth if (depth is not None and depth > 0) else MAX_TREE_DEPTH
     try:
         from collections import deque
-        queue = deque([("", 0)])  # (rel_dir, depth)
+        queue = deque([(start_rel, 0)])  # (rel_dir, cur_depth)
         while queue:
-            rel_dir, depth = queue.popleft()
+            rel_dir, cur_depth = queue.popleft()
             dirpath = os.path.join(root, rel_dir) if rel_dir else str(root)
             try:
                 scandir_items = list(os.scandir(dirpath))
@@ -170,9 +198,9 @@ def list_tree(cwd: str) -> dict:
                     "mtime": stat.st_mtime,
                 })
                 if not is_symlink:
-                    if (depth + 1) < MAX_TREE_DEPTH:
-                        queue.append((prefix + name, depth + 1))
-                    else:
+                    if (cur_depth + 1) < max_depth:
+                        queue.append((prefix + name, cur_depth + 1))
+                    elif depth is None:
                         truncated = True
 
             if truncated:
