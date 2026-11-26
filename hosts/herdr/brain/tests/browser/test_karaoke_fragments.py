@@ -567,6 +567,123 @@ def test_w3p1_first_audio_plays_while_ask_is_still_generating(karaoke_app):
     )
 
 
+def _w3p1_streaming_call(karaoke_app):
+    """A live call against a brain that advertises streaming_ask, with
+    /ask held (still generating) and /next under the test's control."""
+    harness = karaoke_app(history=[turn("  Question?\n", "user"), turn(ANSWER)])
+    streaming_context = {
+        "call_id": "call-synthetic-1", "pane_id": None, "revision": 0,
+        "streaming_ask": True,
+    }
+    harness.respond("/call/context", streaming_context)
+    harness.respond("/call/context", streaming_context, method="POST")
+    harness.context.add_init_script(
+        "localStorage.setItem('herdr-brain-voice-engine', 'navegador');"
+    )
+    harness.page.set_default_timeout(2000)
+    harness.page.set_viewport_size({"width": 1000, "height": 1000})
+    harness.load()
+    expect(harness.page.locator(MAIN)).to_have_count(1)
+    harness.page.locator("#call-btn").click()
+    held_ask, held_later, job_box = [], [], {}
+    first_url = "/audio/w3-early-first.mp3"
+
+    def next_reply(route):
+        after = int(parse_qs(urlsplit(route.request.url).query)["after"][0])
+        if after == -1:
+            route.fulfill(json={"seq": 0, "audio_url": first_url, "is_final": False})
+        elif after == 0:
+            held_later.append(route)  # segment one is "not staged yet"
+        else:
+            route.fulfill(json={"wait": True, "status": "complete"})
+
+    # Registered BEFORE the ask: the speculative /next poll races the
+    # /ask handler, so a per-job registration inside it would be too late.
+    harness.context.route(harness.origin + "/speech/*/next?*", next_reply)
+
+    def hold_ask(route):
+        job = route.request.post_data_json["speech_request_id"]
+        job_box["job"] = job
+        harness.respond("/speech/" + job + "/cancel",
+                        {"status": "cancelled"}, method="POST")
+        held_ask.append(route)  # /ask is NEVER fulfilled until we say so
+
+    harness.context.route(harness.origin + "/ask", hold_ask)
+    harness.page.locator("#text-input").evaluate("el => { el.value = 'Early audio question'; }")
+    harness.page.locator("#text-fallback").evaluate("el => el.requestSubmit()")
+    return harness, held_ask, held_later, job_box, first_url
+
+
+def recognitions(harness):
+    return harness.page.evaluate("() => __karaokeHarness.recognitions.length")
+
+
+def test_w3p1_drained_early_segment_never_rearms_the_mic_over_a_live_ask(karaoke_app):
+    """W3-P1 × S7: while the ask is still generating, a drained early
+    segment must NOT re-arm the mic (an utterance dispatched then would
+    overlap the in-flight ask). The call shows thinking again; the ask's
+    finalizer re-arms the mic once the answer exists."""
+    harness, held_ask, held_later, job_box, first_url = _w3p1_streaming_call(karaoke_app)
+    first = source(harness, "/w3-early-first.mp3")
+    armed = recognitions(harness)
+    harness.media("metadata", duration=50)
+    harness.media("end")  # segment zero drained while /ask is still held
+    harness.page.wait_for_timeout(400)
+    assert len(held_ask) == 1
+    assert recognitions(harness) == armed, "the mic re-armed over a live ask"
+    # The state pill is hidden while the drawer is open (its class goes
+    # stale), so the observable state signals are the pause button —
+    # shown only for mic-controllable states — and the thinking bubble.
+    assert "hidden" in (harness.page.locator("#pause-btn").get_attribute("class") or "")
+    assert harness.page.locator("#thinking-bubble").count() == 1
+
+    held_ask[0].fulfill(json={
+        "answer": "Primera frase. Segunda frase final.",
+        "speech": {"id": job_box["job"], "status": "delivering", "first_seq": 0},
+    })
+    harness.page.wait_for_function(
+        "() => __karaokeHarness.fetchCalls.filter(p => p.includes('/next')).length >= 2"
+    )
+    assert held_later, "segment one's poll must be pending"
+    held_later[0].fulfill(json={"seq": 1, "audio_url": "/audio/w3-early-last.mp3",
+                                "is_final": True})
+    source(harness, "/w3-early-last.mp3", previous=first)
+    harness.media("metadata", duration=50)
+    harness.media("end")
+    idle(harness)
+    assert recognitions(harness) > armed, "the finished turn must re-arm the mic"
+    assert "hidden" not in (harness.page.locator("#pause-btn").get_attribute("class") or "")
+
+
+def test_w3p1_manual_stop_while_generating_keeps_the_turn_and_defers_the_mic(karaoke_app):
+    """W3-P1: Detener during early audio cancels the SPEECH only (the
+    turn's text still lands) and keeps the mic off until the ask
+    resolves — it never arms an utterance over an in-flight ask."""
+    harness, held_ask, held_later, job_box, first_url = _w3p1_streaming_call(karaoke_app)
+    source(harness, "/w3-early-first.mp3")
+    armed = recognitions(harness)
+    harness.page.locator("#stop-audio").click()
+    harness.page.wait_for_function(
+        "() => __karaokeHarness.fetchCalls.filter(p => p.endsWith('/cancel')).length === 1"
+    )
+    assert len(held_ask) == 1, "a manual stop never aborts the generating ask"
+    assert recognitions(harness) == armed, "the mic armed while the ask was in flight"
+    assert harness.page.locator("#thinking-bubble").count() == 1
+
+    held_ask[0].fulfill(json={
+        "answer": "Texto completo del turno.",
+        "speech": {"id": job_box["job"], "status": "cancelled"},
+    })
+    expect(harness.page.locator(MAIN)).to_have_count(2)  # the turn's text landed
+    harness.page.wait_for_function(
+        "armed => __karaokeHarness.recognitions.length > armed", arg=armed
+    )
+    for held in held_later:
+        held.fulfill(json={"wait": True, "status": "cancelled"})
+    plays = harness.media("snapshot")["plays"]
+    assert sum(urlsplit(p["src"]).path.endswith("/w3-early-first.mp3") for p in plays) == 1
+
+
 def test_sc04_late_ask_answer_cannot_revive_audio_or_microphone(karaoke_app):
     harness = app(karaoke_app)
     held_ask = []

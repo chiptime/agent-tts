@@ -150,10 +150,13 @@ EXPECTED_DIGESTS = {
     # dialog_open reason.
     # Parity-w2 S8: history search and the adaptive state poll.
     # W3-P1: streaming_ask awareness (applySharedContext), the speculative
-    # /next poll from ask dispatch, the response dedupe (no restart of an
-    # already-polling player) and the first_sentence/first_segment timing
-    # stash in the audio turn_timing report.
-    "/app.js": "14c182577eb2aa87169bbe0fc6a198ec747646e6d36717041ea9a4a6159bd778",
+    # /next poll from ask dispatch (never on an S7 rejoin dispatch, whose
+    # capture stays armed), the response dedupe (no restart of an
+    # already-polling player), the first_sentence/first_segment timing
+    # stash in the audio turn_timing report, and the early-audio mic
+    # discipline (no re-arm over a still-generating ask; Detener defers
+    # the mic to the ask's finalizer).
+    "/app.js": "ebc9171a828803ce4ad4c8c2d71da449afcf30c821ad07a17d9f1c6c9a159764",
     "/history.js": "fa3526827b3e791bdc8f5950e398f3e318a2bff1c85ba684f0231d22d74e08d9",
     "/push.js": "28e9dd9c444f8f5948d7fc3186a461cf113c1d4de8266e9de769c0781502eaa7",
     "/receipts.js": "df01a313d8f6101bd9601d5a2a65eb420df7791c417a09e2d0d8c269a36742b0",

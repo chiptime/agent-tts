@@ -5675,7 +5675,17 @@
     // here — a momentarily empty queue is not final playback; the
     // segment job's completion status owns that seam below.
     approvalFlow.noteItemPlayed(finished);
-    if (!audioQueue.some(function (queued) { return !queued.announcement; }) && inCall && callState === "speaking") {
+    if (earlyAskStillGenerating()) {
+      // W3-P1: the answer's early audio paused or drained while its ask
+      // is still generating — never re-arm the mic over an in-flight
+      // ask. With nothing ready the call shows thinking again; the
+      // ask's finalizer re-arms once the answer exists.
+      stopBargeInMonitor();
+      if (!audioQueue.some(function (queued) { return !queued.announcement; })) {
+        handBackToThinking();
+      }
+      pumpAudio();  // a segment already staged (or an announcement) still flows
+    } else if (!audioQueue.some(function (queued) { return !queued.announcement; }) && inCall && callState === "speaking") {
       // The turn's audio is fully drained: the monitor's job is over,
       // and it must die BEFORE the mic re-arms (a live monitor hearing
       // the user's next words would cancel the NEXT turn's job).
@@ -5718,8 +5728,16 @@
     }
     stopBtn.classList.add("hidden");
     if (inCall && callState === "speaking") {
-      setCallState(micBaseState());
-      startListening();
+      if (earlyAskStillGenerating()) {
+        // W3-P1: a manual stop of audio whose ask is still generating
+        // cancels the SPEECH only — the turn's text still lands — and
+        // keeps the mic off: the call shows thinking until the response,
+        // and the ask's finalizer re-arms it.
+        handBackToThinking();
+      } else {
+        setCallState(micBaseState());
+        startListening();
+      }
     }
   }
 
@@ -6921,9 +6939,31 @@
    * clobbered by an older turn's cleanup. */
   var askAbort = null;
 
+  /* W3-P1: the speech id of an ask that is STILL GENERATING while its
+   * early audio (segments staged mid-generation) plays. While set, the
+   * call never re-arms the mic: an utterance dispatched now would
+   * overlap the in-flight ask. When that audio stops — a segment ended
+   * before the next one is staged, or a manual stop — the call hands
+   * back to THINKING and the ask's finalizer owns the re-arm. The
+   * finalizer is the only clearer, so an aborted ask clears it too. */
+  var earlyAskJob = null;
+
+  function earlyAskStillGenerating() {
+    return !!earlyAskJob && inCall;
+  }
+
+  function handBackToThinking() {
+    if (callState === "speaking") {
+      setCallState("thinking");
+      showThinkingBubble();
+    }
+  }
+
   function ask(text, opts) {
     opts = opts || {};
-    if (callState === "thinking") return Promise.resolve();
+    // W3-P1: a turn still generating behind its early audio owns the
+    // call exactly like a thinking one — no second ask may overlap it.
+    if (callState === "thinking" || earlyAskStillGenerating()) return Promise.resolve();
     cancelGlanceTap();
     if (karaokeCtl.state().plan) karaokeCtl.stop();
     askCount += 1;
@@ -6983,8 +7023,14 @@
      * only on a brain that advertises it (streaming_ask in
      * /call/context); speech.js needs no change — first:null starts a
      * bare long-poll. When /ask resolves, the response handler does NOT
-     * restart an already-polling player for the same id. */
-    if (serverStreamsAsk && inCall && speech.speech_request_id) {
+     * restart an already-polling player for the same id. A rejoin
+     * dispatch (S7) is excluded: it keeps the capture ARMED through
+     * thinking so the speaker is never cut (PRD-06 D3) — early audio
+     * would reach that capture (echo) and end the window, so those
+     * turns keep the response-time start. Only a dispatch whose capture
+     * is already down may play while generating. */
+    if (serverStreamsAsk && inCall && speech.speech_request_id && !keepLiveCapture) {
+      earlyAskJob = speech.speech_request_id;
       segmentPlayer.start({ id: speech.speech_request_id, sessionId: sessionId, first: null });
     }
     /* /ask spans the FULL consult turn (up to 60 s engine budget plus
@@ -7046,12 +7092,10 @@
             var alreadyPolling = !!speech.speech_request_id &&
               segmentPlayer.state().id === speech.speech_request_id &&
               !segmentPlayer.state().stopped;
-            if (data.speech && typeof data.speech.first_sentence_ms === "number") {
-              liveTiming = liveTiming || {};
+            if (liveTiming && data.speech && typeof data.speech.first_sentence_ms === "number") {
               liveTiming.serverFirstSentenceMs = data.speech.first_sentence_ms;
             }
-            if (data.speech && typeof data.speech.first_segment_ms === "number") {
-              liveTiming = liveTiming || {};
+            if (liveTiming && data.speech && typeof data.speech.first_segment_ms === "number") {
               liveTiming.serverFirstSegmentMs = data.speech.first_segment_ms;
             }
             if (data.speech && data.speech.status === "delivering") {
@@ -7124,6 +7168,9 @@
           interimTextEl.textContent = "";
           renderInterimStrip();
         }
+        /* W3-P1: the early-audio ask is over — from here the ordinary
+         * segment flow owns the mic again (onAudioEnded's re-arm). */
+        if (earlyAskJob === speech.speech_request_id) earlyAskJob = null;
         // A barge-in moved the call on (listening/recording): its own
         // recovery owns the mic; this stale finalizer must not restart it.
         if (callState === "thinking") afterAnswer();
