@@ -1,0 +1,25 @@
+
+[0m[38;2;215;119;87m ▐[0m[38;2;215;119;87m[48;2;0;0;0m▛███▛█   [0m[1mClaude Code [0m[38;2;153;153;153mv2.1.328[0m
+[0m[38;2;215;119;87m▝▜[0m[38;2;215;119;87m[48;2;0;0;0m█████[0m[38;2;215;119;87m█▀  [0m[38;2;153;153;153mSonnet 5.5 · Claude Max[0m
+[0m[38;2;215;119;87m ▝▝   ▝▝   [0m[38;2;153;153;153m~/Code/personal/agent-tts[0m
+
+
+[0m[38;2;153;153;153m[48;2;55;55;55m❯ [0m[38;2;255;255;255m[48;2;55;55;55mHazme una pregunta de multiselección con la herramienta AskUserQuestion dándome 3 [0m[48;2;55;55;55m       [0m
+[0m[48;2;55;55;55m  [0m[38;2;255;255;255m[48;2;55;55;55mopciones con checkbox.[0m[48;2;55;55;55m                                                                   [0m
+[0m[38;2;153;153;153m───────────────────────────────────────────────────────────────────────────────────────────[0m
+[0m[38;2;153;153;153m← [0m[38;2;0;0;0m[48;2;177;185;249m ☐ Pruebas  [0m✔ Submit  →
+
+[0m[1m[38;2;255;255;255m¿Qué tipos de pruebas quieres ejecutar en este repo?[0m
+
+[0m[38;2;177;185;249m❯ [0m[38;2;153;153;153m1. [0m[ ] [0m[38;2;177;185;249mEngine (pytest)[0m
+         [0m[38;2;153;153;153mTests del motor TTS Python en engine/[0m
+  [0m[38;2;153;153;153m2. [0m[ ] Herdr Brain
+         [0m[38;2;153;153;153mTests unitarios/API y JS de hosts/herdr/brain[0m
+  [0m[38;2;153;153;153m3. [0m[ ] TTS plugin (Bash)
+         [0m[38;2;153;153;153mSuite Bash de hosts/herdr/tts-plugin[0m
+  [0m[38;2;153;153;153m4. [0m[ ] [0m[38;2;153;153;153mType something[0m
+     [0m[1mSubmit[0m
+[0m[38;2;153;153;153m───────────────────────────────────────────────────────────────────────────────────────────[0m
+  5. Chat about this
+
+[0m[38;2;153;153;153mEnter to select · ↑/↓ to navigate · Esc to cancel[0m
