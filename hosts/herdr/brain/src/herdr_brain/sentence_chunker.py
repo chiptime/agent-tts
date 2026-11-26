@@ -113,7 +113,7 @@ class SentenceChunker:
                 index += 1
                 continue
             if char == "\n":
-                if not self._in_code:
+                if not self._in_code and not self._armored_open(index):
                     sentence, index = self._close(index)
                     if sentence:
                         sentences.append(sentence)
@@ -132,7 +132,7 @@ class SentenceChunker:
                 if end >= len(self._buf):
                     break  # run may still grow/gain a separator: park
                 if self._buf[end] in _SEPARATORS:
-                    if self._suppress(index):
+                    if self._suppress(index) or self._armored_open(index):
                         index = end  # separator handled on the next pass
                         continue
                     sentence, index = self._close(end)
@@ -140,14 +140,6 @@ class SentenceChunker:
                         sentences.append(sentence)
                     continue
                 index = end
-                continue
-            if char == "\n":
-                if not self._in_code:
-                    sentence, index = self._close(index)
-                    if sentence:
-                        sentences.append(sentence)
-                    continue
-                index += 1
                 continue
             if not self._in_url and self._buf.startswith("://", index):
                 self._in_url = True
@@ -179,6 +171,18 @@ class SentenceChunker:
         if len(word) == 1 and word.isalpha() and word.isupper():
             return True  # an initial: "John F. Kennedy"
         return word.replace(".", "").lower() in _ABBREVIATIONS
+
+    def _armored_open(self, run_end: int) -> bool:
+        """True while the sentence in progress is an armored block (PEM/PGP:
+        a ``-----BEGIN`` line up to its ``-----END`` line) that has not
+        closed yet. The block stays ONE sentence, so the TTS seam masks
+        it as a unit — the same whole-text masking the non-streaming path
+        applies before it splits (C1/S14). Line-split, a multi-line
+        secret would reach that seam fragment by fragment."""
+        text = self._buf[self._emit:run_end]
+        if not text.lstrip().startswith("-----BEGIN"):
+            return False
+        return "-----END" not in text
 
     def _word_before(self, boundary: int) -> str | None:
         """The word ending at ``boundary`` (letters/dots/letters-plus),

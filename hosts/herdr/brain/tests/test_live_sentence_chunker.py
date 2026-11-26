@@ -136,6 +136,18 @@ def test_flush_is_repeatable_after_close():
     assert chunker.flush() is None
 
 
+def test_armored_blocks_stay_one_sentence_for_whole_block_masking():
+    """C1/S14: the non-streaming path masks the WHOLE answer before it
+    splits, so a multi-line secret is always masked as a unit. A stream
+    masks each sentence at the TTS seam, so an armored block (PEM/PGP)
+    must never be split line by line."""
+    block = "-----BEGIN PRIVATE KEY-----\nAAAA\nBBBB\n-----END PRIVATE KEY-----"
+    assert chunks("Claro. " + block + "\nListo.") == ["Claro.", block, "Listo."]
+    tokens = ["Claro. ", "-----BEGIN PRIVATE", " KEY-----\n", "AAAA\n", "BBBB\n",
+              "-----END PRIVATE KEY-----\n", "Listo."]
+    assert streamed(tokens) == ["Claro.", block, "Listo."]
+
+
 def test_chunker_is_deterministic():
     text = "Aviso el Dr. García: 3.14 subió `a.b` hoy. Fin."
     assert chunks(text) == chunks(text)
