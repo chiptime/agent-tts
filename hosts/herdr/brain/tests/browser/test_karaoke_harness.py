@@ -115,7 +115,11 @@ EXPECTED_DIGESTS = {
     # files.js script tag (app.js), the files.* + tabs.files keys (both
     # i18n). files.js rides the same change but is served generically,
     # not pinned.
-    "/": "23706ed0fe7187c23b40aa707145bfef81f6f92c5030dc61a5cac7161cf05a16",
+    # Re-pinned for POST-07 (the cockpit bottom dock, option C): the
+    # tabs row + reply composer dock at the cockpit floor via CSS
+    # `order` (compact rows, --dock-height overlay offsets, desktop
+    # 760px card). CSS-only: app.js and herd-group.js untouched.
+    "/": "ef26cffdebf191f1c37172c396d3b6036d90c2a76432a71fabbd3409ff0cdced",
     # send-track.js re-pinned for the correction batch (f7g): the
     # per-receipt seq guard (a lower seq is a stale delivery, ignored),
     # a start for an already-known receipt never regresses it, and a

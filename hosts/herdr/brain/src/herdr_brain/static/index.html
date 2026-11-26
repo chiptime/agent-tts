@@ -10,6 +10,11 @@
   <style>
     :root {
       --sp-1: 4px; --sp-2: 8px; --sp-3: 16px; --sp-4: 24px;
+      /* POST-07 dock: vertical room the bottom dock (tabs + composer)
+       * takes above the call footer. Fixed overlays (tts-fab, tts-bar,
+       * state-pill, voice-unlock) add it so they never cover the dock.
+       * body-level state rules trim it when rows hide. */
+      --dock-height: 92px;
       /* S4 text size: the whole type scale rides --font-scale
          (Ajustes → Tamaño del texto, 3 steps, per-device). */
       --font-scale: 1;
@@ -615,6 +620,23 @@
     /* Wide viewports: full width on desktop. */
     @media (min-width: 900px) {
       #agent-view { max-width: 100vw; }
+      /* POST-07 dock: on wide screens the two dock rows read as ONE
+       * centered 760px card (the sheets' column), rounded at the top;
+       * the composer's border-top is the card's internal hairline. */
+      #agent-tabs,
+      #pane-reply {
+        width: 100%;
+        max-width: 760px;
+        margin-inline: auto;
+      }
+      #agent-tabs {
+        border: 1px solid var(--line);
+        border-bottom: 0;
+        border-radius: 12px 12px 0 0;
+      }
+      #pane-reply {
+        border: 1px solid var(--line);
+      }
     }
     #pending-banner {
       padding: var(--sp-3);
@@ -638,12 +660,17 @@
       opacity: 0.72;
       filter: saturate(0.5);
     }
-    /* Direct reply to the agent that is waiting (POST /pane/reply). */
+    /* Direct reply to the agent that is waiting (POST /pane/reply).
+     * POST-07 dock: the composer is the dock's bottom row (order 10),
+     * flush above the call footer. */
     #pane-reply {
       display: flex;
       gap: 8px;
-      padding: var(--sp-2) var(--sp-3);
+      order: 10;
+      padding: 2px var(--sp-3);
       align-items: center;
+      background: var(--panel);
+      border-top: 1px solid var(--line);
     }
     #pane-reply.hidden { display: none; }
     #pane-reply input {
@@ -983,20 +1010,29 @@
      * preview) are two tabs of ONE cockpit body: one is shown at a time,
      * so each surface gets real height — the terminal used to be a
      * permanent, cramped 110px strip under the turns. */
-    .agent-tabs {      flex: 0 0 auto;
+    /* POST-07 dock: the tabs row and the reply composer dock at the
+     * cockpit FLOOR as one two-row dock (flex `order`, no DOM move).
+     * Only the header remains at the top, so reading starts right under
+     * it and the dock costs ~90px instead of the old 111px stacked
+     * between header and transcript. Panel background + a top hairline
+     * mark both rows as chrome, matching header/footer language. */
+    .agent-tabs {
+      flex: 0 0 auto;
+      order: 9;
       display: flex;
+      align-items: center;
       gap: 4px;
-      padding: 6px 8px 0;
-      border-bottom: 1px solid var(--line);
+      padding: 0 8px;
+      background: var(--panel);
+      border-top: 1px solid var(--line);
     }
     .agent-tab {
       flex: 1 1 0;
       min-width: 0;
-      min-height: 44px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 6px 10px;
+      min-height: 40px;
+      display: block;
+      padding: 0 10px;
+      line-height: 40px;
       border: 1px solid transparent;
       border-bottom: 0;
       border-radius: 10px 10px 0 0;
@@ -1005,6 +1041,7 @@
       font-size: 12px;
       font-weight: 700;
       letter-spacing: .5px;
+      text-align: center;
       text-transform: uppercase;
       white-space: nowrap;
       overflow: hidden;
@@ -1016,8 +1053,10 @@
       color: var(--text);
     }
     .agent-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
-    /* The label now lives INSIDE its tab: it owns no box of its own. */
-    #glance-label { font: inherit; color: inherit; overflow: hidden; text-overflow: ellipsis; }
+    /* The label now lives INSIDE its tab: it owns no box of its own.
+     * display:block keeps its ellipsis working now that the tab button
+     * centers with line-height instead of flex. */
+    #glance-label { display: block; font: inherit; color: inherit; overflow: hidden; text-overflow: ellipsis; }
     /* The shown panel is the cockpit body: it scrolls its own surface. */
     .agent-panel {
       flex: 1;
@@ -1393,7 +1432,7 @@
     /* Botón flotante para abrir el lector TTS (#tts-fab) */
     #tts-fab {
       position: fixed;
-      bottom: calc(env(safe-area-inset-bottom, 0px) + 84px);
+      bottom: calc(env(safe-area-inset-bottom, 0px) + 84px + var(--dock-height, 0px));
       right: 16px;
       width: 48px;
       height: 48px;
@@ -1427,7 +1466,7 @@
     /* Barra flotante de reproducción móvil (#tts-bar) */
     #tts-bar {
       position: fixed;
-      bottom: calc(env(safe-area-inset-bottom, 0px) + 90px);
+      bottom: calc(env(safe-area-inset-bottom, 0px) + 90px + var(--dock-height, 0px));
       left: 50%;
       transform: translateX(-50%) translateY(160px);
       width: min(92vw, 560px);
@@ -2433,7 +2472,11 @@
     @media (max-width: 480px) {
       #glance-turns { padding: 6px 8px; }
       .gturn { padding: 7px 10px; }
-      .agent-tabs { padding: 6px 6px 0; }
+      .agent-tabs { padding: 0 6px; }
+      /* The model tag already reads in the pane picker and the herd
+       * rows; capping it here keeps the three tab labels alive on a
+       * 360px dock instead of collapsing them to clipped strips. */
+      .tab-model-tag { max-width: 84px; }
       .gscreen-wrap { padding: 0 10px 10px; }
     }
 
@@ -2443,7 +2486,7 @@
       position: fixed;
       left: 50%;
       transform: translateX(-50%);
-      bottom: calc(env(safe-area-inset-bottom, 0px) + 96px);
+      bottom: calc(env(safe-area-inset-bottom, 0px) + 96px + var(--dock-height, 0px));
       z-index: 8;
       min-height: 48px;
       padding: var(--sp-1) var(--sp-3);
@@ -2535,7 +2578,7 @@
       position: fixed;
       left: 50%;
       transform: translateX(-50%);
-      bottom: calc(env(safe-area-inset-bottom, 0px) + 110px);
+      bottom: calc(env(safe-area-inset-bottom, 0px) + 110px + var(--dock-height, 0px));
       z-index: 25;             /* the toast layer */
       padding: var(--sp-2) var(--sp-4);
       border-radius: 999px;
@@ -3473,6 +3516,15 @@
     body.zen header, body.zen #agent-tabs, body.zen #herd-note,
     body.zen #version-footer { display: none; }
     body.zen #agent-view { padding-top: 6px; }
+    /* POST-07 dock: track the dock's real height so fixed overlays sit
+     * above it. Full dock = tabs row (~41px) + composer row (~51px).
+     * When the composer hides (blocked pane) only the tabs remain; in
+     * zen the tabs hide and the composer stays; with the whole cockpit
+     * hidden there is no dock at all. */
+    body:has(#pane-reply.hidden) { --dock-height: 41px; }
+    body.zen { --dock-height: 51px; }
+    body.zen:has(#pane-reply.hidden) { --dock-height: 0px; }
+    body:has(#agent-view.hidden) { --dock-height: 0px; }
     #zen-exit-btn { display: none; }
     body.zen #zen-exit-btn {
       display: inline-flex;
