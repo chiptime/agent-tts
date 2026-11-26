@@ -1,15 +1,15 @@
-"""Cockpit dock (POST-07): tabs row + reply composer live at the FLOOR.
+"""Cockpit top zone (POST-07): compact composer + tabs stack under the header.
 
-The operator's complaint: the zone [tabs Vista/Terminal/Ficheros + model
-tag + search + fullscreen + reply input + Stop + Send] reads as clutter
-stacked between the header and the transcript. Option C (approved
-2026-11-26) docks BOTH rows at the bottom of #agent-view as one
-two-row dock — tabs above composer — leaving only the header at the top,
-so reading starts right under the header and the dock fits ~90px.
+The operator first approved a floor dock (option C) and rejected it after
+seeing it: "no me convence, mejor todo arriba". The final layout keeps the
+DOM order — reply composer, then the tabs row, then the transcript — but
+compact: panel background, hairlines between rows, 40px tabs, 2px composer
+padding, real ellipsis on squeezed tab labels, model tag capped on phones.
+The whole zone costs <=100px instead of the old 113px.
 
 Proven with real boundingClientRect geometry on a phone (360×740) and a
-desktop (1280×800) viewport. Pure CSS repositioning (flex `order`): the
-tab/composer IDs, roles and i18n attributes must stay untouched.
+desktop (1280×800) viewport. Pure CSS: the tab/composer IDs, roles and
+i18n attributes must stay untouched.
 """
 
 from __future__ import annotations
@@ -60,9 +60,8 @@ GEOMETRY_JS = """() => {
     return el ? el.getBoundingClientRect() : null;
   };
   return {
-    tabs: rect('#agent-tabs'),
     composer: rect('#pane-reply'),
-    footer: rect('footer'),
+    tabs: rect('#agent-tabs'),
     turns: rect('#glance-turns'),
     viewport: { w: innerWidth, h: innerHeight },
   };
@@ -85,40 +84,39 @@ def _load(karaoke_app, viewport):
     return page
 
 
-def test_mobile_docks_tabs_and_composer_at_the_floor(karaoke_app):
-    """360×740: tabs+composer adjacent, flush above the footer, ≤100px."""
+def test_mobile_composer_and_tabs_stack_compact_under_the_header(karaoke_app):
+    """360×740: composer under the header, tabs below it, zone <=100px."""
     page = _load(karaoke_app, {"width": 360, "height": 740})
     m = page.evaluate(GEOMETRY_JS)
 
-    # Only the header sits above the transcript: reading starts within
-    # 100px of the viewport top (header ~65px + cockpit hairline). The
-    # dock itself lives at the floor (asserted below).
-    assert m["turns"]["top"] <= 100, m
+    # The composer sits right under the header (no banner in this view):
+    # the whole interactive zone starts within 100px of the viewport top.
+    assert m["composer"]["top"] <= 100, m
 
-    # One dock: tabs directly above the composer, composer flush on the
-    # footer's edge — no gap, no overlap.
-    assert abs(m["tabs"]["bottom"] - m["composer"]["top"]) <= 2, m
-    assert abs(m["composer"]["bottom"] - m["footer"]["top"]) <= 2, m
+    # One stack: composer, then tabs, then the transcript — adjacent rows,
+    # no gaps.
+    assert abs(m["composer"]["bottom"] - m["tabs"]["top"]) <= 2, m
+    assert abs(m["tabs"]["bottom"] - m["turns"]["top"]) <= 2, m
 
-    # The dock's whole vertical cost stays ≤100px (was 111px: 51 + 60).
-    dock = m["tabs"]["height"] + m["composer"]["height"]
-    assert dock <= 100, m
+    # The zone's whole vertical cost stays <=100px (was ~113px).
+    zone = m["composer"]["height"] + m["tabs"]["height"]
+    assert zone <= 100, m
 
-    # The transcript still owns real height below the header.
+    # The transcript still owns real height below the zone.
     assert m["turns"]["height"] > 100, m
 
 
-def test_desktop_dock_centers_in_the_reading_column(karaoke_app):
-    """1280×800: the dock reads as one centered 760px card, not full-width."""
+def test_desktop_composer_and_tabs_center_in_the_reading_column(karaoke_app):
+    """1280×800: the stack reads as one centered 760px card, not full-width."""
     page = _load(karaoke_app, {"width": 1280, "height": 800})
     m = page.evaluate(GEOMETRY_JS)
 
     center = m["viewport"]["w"] / 2
-    for name in ("tabs", "composer"):
+    for name in ("composer", "tabs"):
         row = m[name]
         assert row["width"] <= 762, m
         row_center = (row["left"] + row["right"]) / 2
         assert abs(row_center - center) <= 8, m
 
-    assert abs(m["tabs"]["bottom"] - m["composer"]["top"]) <= 2, m
-    assert abs(m["composer"]["bottom"] - m["footer"]["top"]) <= 2, m
+    assert abs(m["composer"]["bottom"] - m["tabs"]["top"]) <= 2, m
+    assert abs(m["tabs"]["bottom"] - m["turns"]["top"]) <= 2, m

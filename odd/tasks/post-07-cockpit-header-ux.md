@@ -12,17 +12,16 @@ vertical para lectura limpia en móvil (360-412px) y desktop.
 
 ## Specs
 
-- **S1** (Opción C, aprobada 2026-11-26): dock inferior único — `#agent-tabs` y `#pane-reply`
-  se reposicionan al fondo de `#agent-view` (tabs arriba del composer) SIN mover DOM:
-  `order` de CSS. Arriba queda solo `header` (+ banners contextuales).
-- **S2**: alturas objetivo móvil: fila tabs ≈ 40px (tabs `min-height: 40px`), fila composer
-  ≈ 48px (padding 2px + input 44px), dock total ≈ 90px (hoy: 111px). Chrome total
-  257px → ≈ 234px.
-- **S3**: overlays fijos anclados al footer (`#tts-fab`, `#tts-bar`, `#state-pill`,
-  `#voice-unlock`) no deben chocar con el dock: offset extra vía `--dock-height`
-  (90px por defecto; 41px si composer `.hidden`; 49px en zen; 0px zen+composer oculto).
-- **S4** (desktop ≥900px): dock centrado en la columna de 760px con look de tarjeta
-  (tabs con radio superior, hairline interna entre filas), no full-width.
+- **S1** (REV 2, 2026-11-26: operador rechazó el dock al piso — "no me convence, mejor
+  todo arriba"): zona compacta ARRIBA en orden de DOM — composer (fila 1) + tabs
+  (fila 2) bajo el header, panel bg + hairlines, sin `order`.
+- **S2**: alturas objetivo: fila composer ≈ 50-52px (padding 2px + input 44px), fila
+  tabs ≈ 42px (tabs `min-height: 40px`), zona total ≤100px (hoy medido ~94px; antes
+  113px).
+- **S3** (REV 2): overlays fijos SIN cambios respecto de base (anclados al footer;
+  la var `--dock-height` y sus reglas de estado se eliminaron al revertir el dock).
+- **S4** (REV 2, desktop ≥900px): composer+tabs como UNA tarjeta centrada de 760px
+  arriba (composer con radio superior, border-top de tabs como hairline interna).
 - **S5** (C2): cualquier byte de `static/index.html` re-pinea su SHA-256 en
   `EXPECTED_DIGESTS` (`tests/browser/test_karaoke_harness.py`). app.js y herd-group.js
   NO se modifican.
@@ -30,6 +29,8 @@ vertical para lectura limpia en móvil (360-412px) y desktop.
   `#conversation .turn.has-rendered > span:not(.who)` queda intacto; IDs/roles/atributos
   i18n de tabs y composer sin cambios. Validación con `boundingClientRect` en Playwright
   móvil 360×740 y desktop 1280×800. PROHIBIDO editar ROADMAP.md o backend Python.
+  (Herencia REV 1 mantenida: tabs display:block + line-height 40 con ellipsis real,
+  #glance-label display:block, tag modelo ≤480px max 84px.)
 
 ## Tasks
 
@@ -68,3 +69,11 @@ vertical para lectura limpia en móvil (360-412px) y desktop.
   chip capado a 84px en ≤480px. Desktop verificado bien en v1. Re-pin digest necesario ×2.
 - L6 (2026-11-26): estado final medido móvil 360×740: header 65 → lectura y=66, dock 92px
   al piso (tabs 41 + composer 51), flush con footer (659). Desktop: tarjeta 760px centrada.
+- L7 (2026-11-26, REV 2): operador vio las screenshots del dock y dijo verbatim:
+  "no me convence, mejor todo arriba". Se revierte la posición (composer+tabs vuelven
+  arriba en orden DOM) manteniendo compactación, ellipsis real, chip acotado y tarjeta
+  desktop. Test re-escrito a las nuevas expectativas (RED contra el dock → GREEN).
+- L8 (2026-11-26, REV 2 estado final): móvil 360×740 — composer y=66 (bajo header),
+  zona 94px (composer ~52 + tabs 42), lectura ~y=160 (antes de POST-07: 179). Desktop
+  1280×800 — tarjeta 760px centrada arriba. Overlays otra vez como base (sin var).
+  Digest re-pineado a 163dc282… 58 passed (suite enfocada + karaoke).
