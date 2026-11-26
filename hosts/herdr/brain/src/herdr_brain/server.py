@@ -5673,6 +5673,15 @@ def main() -> None:  # pragma: no cover - manual entrypoint
     # tailscale serve proxy) via HERDR_BRAIN_HOST.
     host = os.getenv("HERDR_BRAIN_HOST", "127.0.0.1")
     settings = load_settings()
+
+    # Write PID file so daemon liveness checks pass (including under systemd)
+    pid_file = Path(settings.state_dir) / "daemon.pid"
+    try:
+        pid_file.parent.mkdir(parents=True, exist_ok=True)
+        pid_file.write_text(f"{os.getpid()}\n", encoding="utf-8")
+    except OSError:
+        pass
+
     app = create_app(settings)
 
     # The crew listener (S7): a SECOND uvicorn server on the crew's own

@@ -272,19 +272,27 @@ remote_url() {
     printf '%s\n' "$HERDR_BRAIN_REMOTE_URL"
     return 0
   fi
-  [[ -f "$cfg" ]] || return 0
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    raw="${line%%#*}"
-    raw="${raw#"${raw%%[![:space:]]*}"}"
-    raw="${raw%"${raw##*[![:space:]]}"}"
-    if [[ "$raw" == "HERDR_BRAIN_REMOTE_URL="* ]]; then
-      raw="${raw#HERDR_BRAIN_REMOTE_URL=}"
-      raw="${raw%\"}"; raw="${raw#\"}"
-      raw="${raw%\'}"; raw="${raw#\'}"
-      printf '%s\n' "$raw"
-      return 0
-    fi
-  done < "$cfg"
+  if [[ -f "$cfg" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      raw="${line%%#*}"
+      raw="${raw#"${raw%%[![:space:]]*}"}"
+      raw="${raw%"${raw##*[![:space:]]}"}"
+      if [[ "$raw" == "HERDR_BRAIN_REMOTE_URL="* ]]; then
+        raw="${raw#HERDR_BRAIN_REMOTE_URL=}"
+        raw="${raw%\"}"; raw="${raw#\"}"
+        raw="${raw%\'}"; raw="${raw#\'}"
+        if [[ -n "$raw" ]]; then
+          printf '%s\n' "$raw"
+          return 0
+        fi
+      fi
+    done < "$cfg"
+  fi
+  # Fallback: autodiscover from tailscale serve status via ops_cli
+  if [[ -x "$REPO_DIR/.venv/bin/python" ]]; then
+    PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$REPO_DIR/src${PYTHONPATH:+:$PYTHONPATH}" \
+      "$REPO_DIR/.venv/bin/python" -c "import os; from herdr_brain.ops_cli import _remote_url; u = _remote_url(os.environ); u and print(u)" 2>/dev/null || true
+  fi
 }
 
 ensure_venv() {

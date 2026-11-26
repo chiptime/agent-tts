@@ -71,7 +71,51 @@ def _state_dir(environ: dict) -> Path:
     return Path(load_settings(environ).state_dir)
 
 
-def _remote_url(environ: dict) -> str:
+def _tailscale_serve_url(environ: dict, status_text: Optional[str] = None) -> str:
+    """Discovers the public/tailnet URL pointing to this brain's port in tailscale serve."""
+    port = _brain_port(environ)
+    target = f"http://127.0.0.1:{port}"
+    raw = status_text
+    if raw is None:
+        try:
+            import subprocess
+
+            proc = subprocess.run(
+                ["tailscale", "serve", "status", "--json"],
+                capture_output=True,
+                text=True,
+                timeout=2.0,
+                check=False,
+            )
+            if proc.returncode == 0:
+                raw = proc.stdout
+        except (OSError, subprocess.SubprocessError):
+            pass
+    if not raw or not raw.strip():
+        return ""
+    try:
+        import json
+
+        data = json.loads(raw)
+        web = data.get("Web", {})
+        candidates = []
+        for host_port, config in web.items():
+            handlers = config.get("Handlers", {})
+            for path, handler in handlers.items():
+                if handler.get("Proxy") == target:
+                    host, _, p = host_port.partition(":")
+                    p_num = int(p) if p.isdigit() else 443
+                    url = f"https://{host}" if p_num == 443 else f"https://{host}:{p_num}"
+                    candidates.append((0 if p_num == 443 else 1, url))
+        if candidates:
+            candidates.sort(key=lambda c: c[0])
+            return candidates[0][1]
+    except (ValueError, TypeError, AttributeError):
+        pass
+    return ""
+
+
+def _remote_url(environ: dict, serve_status: Optional[str] = None) -> str:
     direct = str(environ.get("HERDR_BRAIN_REMOTE_URL", "") or "").strip()
     if direct:
         return direct
@@ -82,20 +126,20 @@ def _remote_url(environ: dict) -> str:
         Path(environ.get("HOME", "")).expanduser() / ".config"
         if str(environ.get("HOME", "")).strip() else None
     )
-    if base is None:
-        return ""
-    path = base / "herdr-brain" / "config.env"
-    try:
-        for line in path.read_text(encoding="utf-8").splitlines():
-            stripped = line.split("#", 1)[0].strip()
-            if stripped.startswith("HERDR_BRAIN_REMOTE_URL="):
-                raw = stripped[len("HERDR_BRAIN_REMOTE_URL="):].strip()
-                if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "\"'":
-                    raw = raw[1:-1]
-                return raw
-    except OSError:
-        return ""
-    return ""
+    if base is not None:
+        path = base / "herdr-brain" / "config.env"
+        try:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                stripped = line.split("#", 1)[0].strip()
+                if stripped.startswith("HERDR_BRAIN_REMOTE_URL="):
+                    raw = stripped[len("HERDR_BRAIN_REMOTE_URL="):].strip()
+                    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "\"'":
+                        raw = raw[1:-1]
+                    if raw:
+                        return raw
+        except OSError:
+            pass
+    return _tailscale_serve_url(environ, serve_status)
 
 
 def _read_serve_status(value: str) -> Optional[str]:
@@ -156,24 +200,26 @@ def cmd_unserve(args, environ: dict) -> int:
     root = getattr(args, "root", False)
     if root:
         _print("[herdr-brain] The brain never runs tailscale — run this yourself:")
-        _print("  tailscale serve off")
-        _print(
-            "  (this clears EVERY serve mapping on the node — check "
-            "`tailscale serve status` first)"
-        )
+        _print("  tailscale serve --https=443 off")
+        _print("  (this unsets only the root HTTPS 443 mapping for the brain)")
         return EXIT_OK
+    https_port = getattr(args, "https", None) or 8443
     _print("[herdr-brain] The brain never runs tailscale — run this yourself:")
-    _print("  tailscale serve --https=8443 off")
+    _print(f"  tailscale serve --https={https_port} off")
     _print("  (adjust the port if you published a different one)")
     return EXIT_OK
 
 
 def cmd_qr(args, environ: dict) -> int:
-    url = _remote_url(environ)
+    status_value = getattr(args, "serve_status", None)
+    serve_status = None
+    if status_value:
+        serve_status = _read_serve_status(status_value)
+    url = _remote_url(environ, serve_status)
     if not url:
         _print(
-            "no remote URL is configured — set HERDR_BRAIN_REMOTE_URL or "
-            "persist it in config.env (see `herdr-brain url`)",
+            "no remote URL is configured — set HERDR_BRAIN_REMOTE_URL, "
+            "persist it in config.env, or publish with `herdr-brain serve`",
             sys.stderr,
         )
         return EXIT_FAIL
@@ -290,7 +336,9 @@ def build_parser():
     serve.add_argument("--serve-status", default=None)
     unserve = sub.add_parser("unserve")
     unserve.add_argument("--root", action="store_true")
-    sub.add_parser("qr")
+    unserve.add_argument("--https", type=int, default=None)
+    qr = sub.add_parser("qr")
+    qr.add_argument("--serve-status", default=None)
     logs = sub.add_parser("logs")
     logs.add_argument("-n", type=int, default=None)
     logs.add_argument("-f", action="store_true")

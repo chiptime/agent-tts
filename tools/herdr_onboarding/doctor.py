@@ -148,10 +148,36 @@ class Doctor:
         model_key = "HERDR_BRAIN_STT_MODEL" if self.role == "brain" else "AGENT_TTS_STT_MODEL"
         model = self.env.get(model_key)
         if not model and self.role == "brain":
-            try:
-                model = resolve._read_env_key(secrets.brain_env_path(self.env), model_key)
-            except (OSError, UnicodeError):
-                pass
+            model = self.env.get("HERDR_BRAIN_LIVE_STT_MODEL")
+            if not model:
+                try:
+                    model = resolve._read_env_key(secrets.brain_env_path(self.env), model_key)
+                except (OSError, UnicodeError):
+                    pass
+            if not model:
+                try:
+                    model = resolve._read_env_key(secrets.brain_env_path(self.env), "HERDR_BRAIN_LIVE_STT_MODEL")
+                except (OSError, UnicodeError):
+                    pass
+            if not model:
+                # Also check systemd user unit drop-ins (e.g. live-stt.conf).
+                home_dir = self.env.get("HOME", "")
+                if home_dir:
+                    config_home = Path(self.env.get("XDG_CONFIG_HOME", str(Path(home_dir) / ".config")))
+                    dropin_dir = config_home / "systemd" / "user" / "herdr-brain.service.d"
+                    if dropin_dir.is_dir():
+                        for conf in sorted(dropin_dir.glob("*.conf")):
+                            try:
+                                for line in conf.read_text(encoding="utf-8").splitlines():
+                                    line = line.strip()
+                                    if line.startswith("Environment="):
+                                        env_val = line[len("Environment="):].strip()
+                                        if env_val.startswith(f"{model_key}="):
+                                            model = env_val.split("=", 1)[1].strip().strip("\"'")
+                                        elif env_val.startswith("HERDR_BRAIN_LIVE_STT_MODEL="):
+                                            model = env_val.split("=", 1)[1].strip().strip("\"'")
+                            except OSError:
+                                pass
         model = model or "small"
         module = "herdr_brain.stt" if self.role == "brain" else "agent_tts.stt.transcriber"
         # Import the runtime's exact cache-only API in its own interpreter.

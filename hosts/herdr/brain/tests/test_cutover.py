@@ -137,7 +137,8 @@ class TestServeVerbs:
         assert "tailscale serve --https=8443 off" in out
         assert ops_cli.main(["unserve", "--root"], env={}) == 0
         out = capsys.readouterr().out
-        assert "tailscale serve off" in out
+        assert "tailscale serve --https=443 off" in out
+        assert "(this unsets only the root HTTPS 443 mapping for the brain)" in out
 
     def test_serve_never_executes_anything(self, tmp_path, monkeypatch):
         calls = []
@@ -160,7 +161,21 @@ class TestQrVerb:
         assert "https://node.tail.ts.net:8443/" in out
         assert "QR" in out  # names the limitation honestly
 
-    def test_without_a_remote_url_it_says_so(self, tmp_path, capsys):
+    def test_qr_autodiscovers_from_tailscale_serve_status(self, tmp_path, capsys):
+        status = tmp_path / "status.json"
+        status.write_text(
+            '{"Web": {"node.tail.ts.net:443": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:8741"}}}}}'
+        )
+        exit_code = ops_cli.main(
+            ["qr", "--serve-status", str(status)],
+            env={"HERDR_BRAIN_PORT": "8741"},
+        )
+        out = capsys.readouterr().out
+        assert exit_code == 0
+        assert "PWA URL: https://node.tail.ts.net" in out
+
+    def test_without_a_remote_url_it_says_so(self, tmp_path, capsys, monkeypatch):
+        monkeypatch.setattr(ops_cli, "_tailscale_serve_url", lambda env, status=None: "")
         exit_code = ops_cli.main(["qr"], env={})
         captured = capsys.readouterr()
         assert exit_code == 1
