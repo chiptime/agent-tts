@@ -1195,6 +1195,8 @@ class TestApprovalRegression:
             "switch_model",
             # W3-P2 S4: read-only git status + diff of a pane workspace.
             "read_workspace_changes",
+            # POST-02 S3: read-only AI provider quota read.
+            "check_quotas",
         } | CONSULT_TOOL_NAMES
 
 

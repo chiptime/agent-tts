@@ -291,6 +291,19 @@ curl -s localhost:8741/herd
 # OpenCode, Claude Code, pi/omp and Antigravity stores; the PWA shows such a
 # pane under "Con error" and web push announces it.
 
+# AI provider usage quotas (POST-02): the cached snapshot of the host's
+# external `ai-quotas` CLI (5 min TTL, background refresh — never a fresh
+# subprocess per request). String fields leave masked; the PWA keys on
+# `provider`. Until the first background read lands, the answer is
+# available:false + reason:"not-ready". The voice twin is the `check_quotas`
+# LLM tool ("¿cuánto me queda de cuota?").
+curl -s localhost:8741/quotas
+# → {"available":true,"reason":"","stale":false,"fetched_at":"2026-11-26T18:00:00+00:00",
+#     "providers":[{"provider":"claude","display_name":"Anthropic Claude","kind":"window",
+#     "label":"5h window","used_percent":34.0,"resets_at":"2026-11-26T18:59:59+00:00",
+#     "state":"ok","status_indicator":null,"status_summary":null,"detail":null,
+#     "cost_today_usd":null,"cost_month_to_date_usd":null}, …]}
+
 # live announcements (SSE) and web push: transitions into done/blocked/error
 curl -N localhost:8741/events
 # → : connected

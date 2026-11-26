@@ -195,4 +195,8 @@ def pytest_runtest_protocol(item, nextitem):
             patch.setenv("CLAUDE_PROJECTS_ROOT", str(Path(root) / "nonexistent-claude"))
             # Never spawn the real engine `last-model` CLI (parity F7a S3).
             patch.setenv("HERDR_BRAIN_PANE_MODEL", "off")
+            # POST-02: never run the host's real ai-quotas CLI from a
+            # test boot (network + ~8s subprocess per create_app);
+            # quota tests inject their own runner/binary instead.
+            patch.setattr("herdr_brain.quotas.ai_quotas_binary", lambda: None)
             return (yield)

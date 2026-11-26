@@ -762,6 +762,8 @@ class TestDispatch:
             "resume_session",
             # parity-f7d S3: the gated model switch of a pane.
             "switch_model",
+            # POST-02 S3: read-only AI provider quota read.
+            "check_quotas",
         }
 
     def test_switch_model_schema_is_gated_and_names_the_model(self):

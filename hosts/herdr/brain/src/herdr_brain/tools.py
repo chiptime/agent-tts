@@ -53,6 +53,7 @@ from .herdr import (
 from .mux import create_mux
 from .mux.refusal import MuxRefusal
 from .pane_model import OpencodeModelCatalog, PaneModelResolver
+from .quotas import QuotaService, format_reset
 from .send_receipts import (
     STOP_ENDED_STATUSES,
     VERIFIED_STOP_WAIT_MS,
@@ -401,6 +402,7 @@ class BrainTools:
         consult: Optional[ConsultService] = None,
         pane_model: Optional[PaneModelResolver] = None,
         model_catalog: Optional[OpencodeModelCatalog] = None,
+        quota_service: Optional[QuotaService] = None,
     ):
         self._settings = settings
         self._herdr = herdr or create_mux(settings)
@@ -409,6 +411,9 @@ class BrainTools:
         # Every connected opencode model (GET /pane/models): lazy — the
         # CLI only runs when a card asks.
         self._model_catalog = model_catalog or OpencodeModelCatalog()
+        # Provider quota snapshots (POST-02): cached reads of the host's
+        # external ai-quotas CLI — never blocking, never persisted.
+        self._quota_service = quota_service or QuotaService()
         # Injectable readiness-loop primitives (tests drive them without
         # real 40 s waits); production uses monotonic time and real sleep.
         self._clock = clock or time.monotonic
@@ -2972,6 +2977,69 @@ class BrainTools:
             payload["detail"] = "0 open sessions."
         return json.dumps(payload, ensure_ascii=False)
 
+    def check_quotas(self) -> str:
+        """AI provider usage quotas (POST-02 S3, doc 13 §3).
+
+        One compact summary line per provider window the host's
+        ``ai-quotas`` CLI reports, from the quota service's cached
+        snapshot: percentages, reset stamps and costs when the provider
+        publishes them. A cold cache answers honestly (``not-ready``)
+        instead of blocking the call on the ~5-15s subprocess; failures
+        come back as their fail-soft reason. Credentials never appear:
+        the service whitelists exactly the quota fields.
+        """
+        snap = self._quota_service.snapshot()
+        reason = snap.get("reason", "")
+        if not snap["providers"]:
+            if reason == "not-ready":
+                return (
+                    "AI quota data is not ready yet — the check is "
+                    "running in the background; ask again in a few seconds."
+                )
+            return (
+                f"AI quota check failed ({reason or 'unknown'}); "
+                "no provider data is available right now."
+            )
+        lines = ["AI quotas:"]
+        for record in snap["providers"]:
+            name = record.get("display_name") or record["provider"]
+            label = record.get("label") or record.get("kind") or "usage"
+            if record["used_percent"] is None:
+                bits = []
+                if record["cost_today_usd"] is not None:
+                    bits.append(f"${record['cost_today_usd']:.2f} today")
+                if record["cost_month_to_date_usd"] is not None:
+                    bits.append(f"${record['cost_month_to_date_usd']:.2f} this month")
+                suffix = ", ".join(bits) if bits else "balance reported, no usage window"
+                line = f"- {name} {label}: {suffix}"
+            else:
+                line = f"- {name} {label}: {record['used_percent']:.0f}% used"
+                reset = format_reset(record["resets_at"])
+                if reset:
+                    line += f", resets {reset}"
+                if record["state"] not in ("", "ok"):
+                    line += f" [{record['state']}]"
+            detail = record.get("detail")
+            if detail:
+                line += f" ({detail})"
+            lines.append(line)
+        if snap.get("stale"):
+            lines.append("(snapshot is stale; a refresh is running)")
+        # S5: the tool result is an outbound seam — it leaves masked,
+        # before any downstream truncation.
+        return mask_text("\n".join(lines))
+
+    def quota_snapshot(self) -> Dict:
+        """POST-02 S4: the payload GET /quotas serializes (the route
+        masks the string fields before it leaves)."""
+        return self._quota_service.snapshot()
+
+    def quota_prewarm(self) -> None:
+        """Boot seam (POST-02 S2): kick the background quota refresh so
+        the first voice ask finds the cache warm. The server guards the
+        call with ``hasattr`` so injected doubles keep working."""
+        self._quota_service.prewarm()
+
     def read_workspace_changes(
         self,
         target: Optional[AgentInfo] = None,
@@ -3915,6 +3983,7 @@ class BrainTools:
         handler: Optional[Callable] = {
             "get_status": self.get_status,
             "list_open_sessions": self.list_open_sessions,
+            "check_quotas": self.check_quotas,
             "read_workspace_changes": self.read_workspace_changes,
             "read_transcript": self.read_transcript,
             "read_screen": self.read_screen,
@@ -3935,6 +4004,8 @@ class BrainTools:
             return f"error: unknown tool {name}"
         try:
             if name == "list_open_sessions":
+                return handler()
+            if name == "check_quotas":
                 return handler()
             if name == "send_to_session":
                 return handler(
@@ -4448,6 +4519,24 @@ TOOLS_SCHEMA = [
                     },
                 },
                 "required": ["model"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "check_quotas",
+            "description": (
+                "Reads AI provider usage quotas (claude, chatgpt, gemini, "
+                "deepseek, zai and friends): usage windows, percent used, "
+                "reset times and costs when the provider reports them. "
+                "Use it whenever the user asks about quotas, usage, "
+                "limits or how much allowance is left."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
             },
         },
     },

@@ -1442,6 +1442,12 @@ def create_app(
     tools = BrainTools(cfg)
     if hasattr(tools, "attach_consult"):
         tools.attach_consult(consult)
+    # POST-02 S2: warm the quota cache in the background so the first
+    # voice ask never waits on the ~5-15s cold ai-quotas run. Doubles
+    # without the seam (test stubs) keep booting untouched.
+    quota_prewarm = getattr(tools, "quota_prewarm", None)
+    if callable(quota_prewarm):
+        quota_prewarm()
     synth = tts_renderer or render_mp3
     # One reader cache per app instance (mirrors the tts_renderer seam):
     # production rides the real herdr-tts --render-html surface, tests
@@ -2406,6 +2412,45 @@ def create_app(
             return tools.status_payload()
         except Exception:  # noqa: BLE001 — a polling endpoint never 500s
             return _status_payload(None)
+
+    @app.get("/quotas")
+    def quotas() -> dict:
+        """AI provider usage quotas (POST-02 S4, read-only).
+
+        The quota service's cached snapshot of the host's ``ai-quotas``
+        CLI — never a fresh subprocess here, so the endpoint answers in
+        microseconds even mid-call. String fields pass through
+        ``mask_text`` before leaving (S5); the numeric quota fields and
+        the ``provider`` key stay exact for the PWA to key on.
+        """
+        try:
+            snap = tools.quota_snapshot()
+        except Exception:  # noqa: BLE001 — a polling endpoint never 500s
+            snap = {"providers": [], "reason": "unavailable", "fetched_at": None, "stale": False}
+        masked = []
+        for record in snap.get("providers") or []:
+            clean = dict(record)
+            for field in (
+                "display_name",
+                "kind",
+                "label",
+                "resets_at",
+                "state",
+                "status_indicator",
+                "status_summary",
+                "detail",
+            ):
+                value = clean.get(field)
+                if isinstance(value, str):
+                    clean[field] = mask_text(value)
+            masked.append(clean)
+        return {
+            "available": bool(masked),
+            "reason": snap.get("reason", ""),
+            "stale": bool(snap.get("stale")),
+            "fetched_at": snap.get("fetched_at"),
+            "providers": masked,
+        }
 
     @app.get("/herd")
     def herd() -> object:
