@@ -4505,10 +4505,13 @@
   var filesViewerClose = $("files-viewer-close");
   var filesViewerContent = $("files-viewer-content");
   var filesDiff = $("files-diff");
+  var filesDiffTitle = $("files-diff-title");
   var filesDiffSummary = $("files-diff-summary");
   var filesDiffClose = $("files-diff-close");
+  var filesCommitBar = $("files-commit-bar");
   var filesDiffFiles = $("files-diff-files");
   var filesDiffContent = $("files-diff-content");
+  var filesStatusMap = {};
 
   var filesFetchSeq = 0;  // stale-response guard: only the newest load paints
 
@@ -4588,6 +4591,14 @@
     var name = document.createElement("span");
     name.className = "files-row-name";
     name.textContent = row.name;
+    var status = filesStatusMap[row.path];
+    if (status) {
+      var badge = window.FilesExplorer.statusBadge(status);
+      var bEl = document.createElement("span");
+      bEl.className = "diff-badge files-row-badge " + badge.cls;
+      bEl.textContent = badge.code;
+      name.appendChild(bEl);
+    }
     var meta = document.createElement("span");
     meta.className = "files-row-meta";
     meta.textContent = [row.size, row.mtime].filter(Boolean).join(" · ");
@@ -4628,9 +4639,30 @@
     fetchWorkspaceJson("/workspace/changes" + workspaceFilesQuery(), paintWorkspaceDiff);
   }
 
+  function renderColoredDiff(lines, rawBody) {
+    filesDiffContent.textContent = "";
+    if (!lines || !lines.length) {
+      filesDiffContent.textContent = rawBody || "";
+      return;
+    }
+    var frag = document.createDocumentFragment();
+    for (var i = 0; i < lines.length; i++) {
+      var item = lines[i];
+      var span = document.createElement("span");
+      span.className = "diff-line diff-line-" + (item.kind || "ctx");
+      span.textContent = item.text;
+      frag.appendChild(span);
+    }
+    filesDiffContent.appendChild(frag);
+  }
+
   function paintWorkspaceDiff(body) {
     filesDiffFiles.textContent = "";
     filesDiffContent.textContent = "";
+    if (filesCommitBar) {
+      filesCommitBar.textContent = "";
+      filesCommitBar.classList.add("hidden");
+    }
     if (!body || !body.available) {
       setFilesStatus((body && body.error) || t("files.error"));
       return;
@@ -4640,9 +4672,68 @@
       return;
     }
     setFilesStatus(body.truncated ? t("files.truncated") : "");
-    filesDiffSummary.textContent = window.FilesExplorer.statusSummary(body.entries);
+
+    // Update status map for badges in tree and chips
+    filesStatusMap = {};
+    if (Array.isArray(body.entries)) {
+      for (var k = 0; k < body.entries.length; k++) {
+        var ent = body.entries[k];
+        if (ent && ent.path) filesStatusMap[ent.path] = ent.status;
+      }
+    }
+
+    var hasWorkingChanges = body.entries && body.entries.length > 0;
+    var viewingRef = body.ref || null;
+
+    if (viewingRef) {
+      if (filesDiffTitle) filesDiffTitle.textContent = "Commit " + viewingRef.slice(0, 7);
+      if (filesDiffSummary) {
+        var cmtObj = body.commits && body.commits.find(function (c) { return c.sha.startsWith(viewingRef) || viewingRef.startsWith(c.sha); });
+        filesDiffSummary.textContent = cmtObj ? (cmtObj.message + " (" + cmtObj.time + ")") : "";
+      }
+    } else {
+      if (filesDiffTitle) filesDiffTitle.textContent = hasWorkingChanges ? "Cambios sin confirmar" : "Workspace limpio (sin cambios pendientes)";
+      if (filesDiffSummary) filesDiffSummary.textContent = window.FilesExplorer.statusSummary(body.entries);
+    }
+
+    // Render commit history bar (Lazygit-style commits bar)
+    if (filesCommitBar && Array.isArray(body.commits) && body.commits.length) {
+      filesCommitBar.classList.remove("hidden");
+      var workChip = document.createElement("button");
+      workChip.type = "button";
+      workChip.className = "files-commit-chip" + (!viewingRef ? " active" : "");
+      workChip.textContent = "⎇ " + (hasWorkingChanges ? "Cambios (" + body.entries.length + ")" : "Árbol limpio");
+      workChip.addEventListener("click", function () {
+        openWorkspaceChanges();
+      });
+      filesCommitBar.appendChild(workChip);
+
+      for (var cIdx = 0; cIdx < body.commits.length; cIdx++) {
+        (function (cmt) {
+          var isCur = viewingRef && (cmt.sha.startsWith(viewingRef) || viewingRef.startsWith(cmt.sha));
+          var cChip = document.createElement("button");
+          cChip.type = "button";
+          cChip.className = "files-commit-chip" + (isCur ? " active" : "");
+          cChip.title = cmt.message + " (" + cmt.time + ")";
+          var shortMsg = cmt.message.length > 22 ? cmt.message.slice(0, 22) + "…" : cmt.message;
+          cChip.textContent = cmt.sha + " " + shortMsg;
+          cChip.addEventListener("click", function () {
+            setFilesStatus(t("files.loading"));
+            fetchWorkspaceJson("/workspace/changes" + workspaceFilesQuery({ ref: cmt.sha }), paintWorkspaceDiff);
+          });
+          filesCommitBar.appendChild(cChip);
+        })(body.commits[cIdx]);
+      }
+    }
+
     var chunks = window.FilesExplorer.diffFiles(body.diff);
     if (!chunks.length) {
+      if (!viewingRef && !hasWorkingChanges && body.commits && body.commits.length) {
+        // Auto-load latest commit when tree is clean so user immediately sees what changed
+        setFilesStatus("Árbol limpio: mostrando último commit " + body.commits[0].sha);
+        fetchWorkspaceJson("/workspace/changes" + workspaceFilesQuery({ ref: body.commits[0].sha }), paintWorkspaceDiff);
+        return;
+      }
       filesDiffContent.textContent = t("files.no_diff");
     } else {
       for (var i = 0; i < chunks.length; i++) paintDiffChip(chunks[i], i === 0);
@@ -4655,16 +4746,45 @@
     var chip = document.createElement("button");
     chip.type = "button";
     chip.className = "files-diff-chip" + (selected ? " active" : "");
-    chip.textContent = chunk.file;
     chip.setAttribute("role", "option");
+
+    // Status badge (M, A, D, ?)
+    var status = filesStatusMap[chunk.file];
+    if (status) {
+      var badge = window.FilesExplorer.statusBadge(status);
+      var bEl = document.createElement("span");
+      bEl.className = "diff-badge " + badge.cls;
+      bEl.textContent = badge.code;
+      chip.appendChild(bEl);
+    }
+
+    var nameSpan = document.createElement("span");
+    nameSpan.textContent = chunk.file;
+    chip.appendChild(nameSpan);
+
+    if (chunk.additions || chunk.deletions) {
+      if (chunk.additions) {
+        var addEl = document.createElement("span");
+        addEl.className = "diff-stat-add";
+        addEl.textContent = "+" + chunk.additions;
+        chip.appendChild(addEl);
+      }
+      if (chunk.deletions) {
+        var delEl = document.createElement("span");
+        delEl.className = "diff-stat-del";
+        delEl.textContent = "-" + chunk.deletions;
+        chip.appendChild(delEl);
+      }
+    }
+
     chip.addEventListener("click", function () {
       var chips = filesDiffFiles.children;
       for (var i = 0; i < chips.length; i++) chips[i].classList.remove("active");
       chip.classList.add("active");
-      filesDiffContent.textContent = chunk.body;
+      renderColoredDiff(chunk.parsedLines, chunk.body);
     });
     filesDiffFiles.appendChild(chip);
-    if (selected) filesDiffContent.textContent = chunk.body;
+    if (selected) renderColoredDiff(chunk.parsedLines, chunk.body);
   }
 
   filesRefreshBtn.addEventListener("click", refreshWorkspaceFiles);
@@ -9417,6 +9537,19 @@
     }
     else startCall();
   });
+
+  var callTestStreamBtn = $("call-test-stream");
+  if (callTestStreamBtn) {
+    callTestStreamBtn.addEventListener("click", function () {
+      if (!inCall) {
+        startCall();
+      }
+      showToast("⚡ Disparando pregunta de prueba para streaming...", { duration: 3000 });
+      setTimeout(function () {
+        ask("Explícame brevemente en tres frases cortas por qué el cielo es azul.");
+      }, 300);
+    });
+  }
 
   /* "Volver a una llamada anterior": one ACTIVE call at a time — a live
    * call hangs up first, then the chosen record reopens server-side

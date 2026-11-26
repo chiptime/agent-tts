@@ -116,6 +116,18 @@ test("diffFiles keeps the full body so context lines survive", () => {
   const chunks = Files.diffFiles(TWO_FILE_DIFF);
   assert.ok(chunks[0].body.includes("-print('app')"));
   assert.ok(chunks[0].body.includes("@@ -1 +1 @@"));
+  assert.equal(chunks[0].additions, 1);
+  assert.equal(chunks[0].deletions, 1);
+  assert.ok(chunks[0].parsedLines.some(l => l.kind === "add" && l.text === "+print('changed')"));
+  assert.ok(chunks[0].parsedLines.some(l => l.kind === "del" && l.text === "-print('app')"));
+  assert.ok(chunks[0].parsedLines.some(l => l.kind === "hunk" && l.text === "@@ -1 +1 @@"));
+});
+
+test("statusBadge returns letter and class for porcelain statuses", () => {
+  assert.deepEqual(Files.statusBadge("M"), { code: "M", cls: "diff-badge-m" });
+  assert.deepEqual(Files.statusBadge("A"), { code: "A", cls: "diff-badge-a" });
+  assert.deepEqual(Files.statusBadge("D"), { code: "D", cls: "diff-badge-d" });
+  assert.deepEqual(Files.statusBadge("??"), { code: "?", cls: "diff-badge-u" });
 });
 
 test("a rename is named by its new path", () => {

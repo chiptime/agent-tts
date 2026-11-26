@@ -2626,7 +2626,9 @@ def create_app(
         return {**base, **payload}
 
     @app.get("/workspace/changes")
-    def workspace_changes(pane_id: Optional[str] = None) -> dict:
+    def workspace_changes(
+        pane_id: Optional[str] = None, ref: Optional[str] = None
+    ) -> dict:
         """``git status`` + ``git diff`` inside one pane's workspace."""
         base = _workspace_target(pane_id)
         if not base.get("available"):
@@ -2634,10 +2636,12 @@ def create_app(
                 **base,
                 "is_git_repo": False,
                 "entries": [],
+                "commits": [],
                 "diff": None,
                 "truncated": False,
+                "ref": None,
             }
-        payload = workspace.git_changes(base["cwd"])
+        payload = workspace.git_changes(base["cwd"], ref=ref)
         return {**base, **payload}
 
     @app.get("/pane/{pane_id}/mirror")

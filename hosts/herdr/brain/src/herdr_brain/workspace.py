@@ -309,16 +309,32 @@ def _parse_status_line(line: str) -> Optional[Dict[str, str]]:
     return {"status": status.strip() or "?", "path": path}
 
 
-def git_changes(cwd: str, runner: Optional[Callable] = None) -> dict:
+def _is_safe_ref(ref: str) -> bool:
+    """True if ``ref`` looks like a plausible git commit SHA, tag or branch.
+
+    Refuses anything starting with a dash (option injection) and any
+    character outside the standard git ref set.
+    """
+    if not ref or len(ref) > 100 or ref.startswith("-"):
+        return False
+    import re
+    return bool(re.match(r"^[a-zA-Z0-9_.~^/@{}-]+$", ref))
+
+
+def git_changes(
+    cwd: str,
+    runner: Optional[Callable] = None,
+    ref: Optional[str] = None,
+) -> dict:
     """``git status`` + ``git diff`` inside the pane cwd (S1/S2).
 
     Runs the git CLI read-only in the pane's workspace: ``--porcelain``
-    status entries, then the diff of tracked changes — against HEAD when
-    the repository has commits, working-tree-only otherwise (a fresh
-    ``git init`` has no HEAD). Output is capped at
+    status entries, then the diff of tracked changes (against HEAD, or
+    for a specific commit if ``ref`` is passed), plus recent commits for
+    quick inspection when the worktree is clean. Output is capped at
     :data:`DIFF_MAX_BYTES` with a ``truncated`` flag; every git failure,
     a non-repo workspace and a timeout are ordinary payloads:
-    ``{cwd, available, is_git_repo, entries, diff, truncated, error?}``.
+    ``{cwd, available, is_git_repo, entries, commits, diff, truncated, ref, error?}``.
     """
     root = resolve_pane_root(cwd)
     if root is None:
@@ -327,8 +343,10 @@ def git_changes(cwd: str, runner: Optional[Callable] = None) -> dict:
             "available": False,
             "is_git_repo": False,
             "entries": [],
+            "commits": [],
             "diff": None,
             "truncated": False,
+            "ref": None,
             "error": "the pane has no readable working directory",
         }
     run = runner or _runner()
@@ -352,8 +370,10 @@ def git_changes(cwd: str, runner: Optional[Callable] = None) -> dict:
             "available": True,
             "is_git_repo": False,
             "entries": [],
+            "commits": [],
             "diff": None,
             "truncated": False,
+            "ref": None,
             "error": None,
         }
     try:
@@ -366,13 +386,33 @@ def git_changes(cwd: str, runner: Optional[Callable] = None) -> dict:
         if parsed is not None:
             entries.append(parsed)
 
+    commits: List[Dict[str, str]] = []
+    try:
+        log = _git("log", "-n", "8", "--format=%h|%an|%cr|%s")
+        if log.returncode == 0:
+            for line in log.stdout.splitlines():
+                parts = line.split("|", 3)
+                if len(parts) == 4:
+                    commits.append({
+                        "sha": parts[0].strip(),
+                        "author": parts[1].strip(),
+                        "time": parts[2].strip(),
+                        "message": parts[3].strip(),
+                    })
+    except (OSError, subprocess.TimeoutExpired, AssertionError):
+        pass
+
     diff_text = ""
     truncated = False
+    target_ref = ref if (ref and _is_safe_ref(ref)) else None
     try:
-        head = _git("rev-parse", "--verify", "--quiet", "HEAD")
-        diff = _git("diff", "HEAD") if head.returncode == 0 else _git("diff")
+        if target_ref is not None:
+            diff = _git("show", target_ref)
+        else:
+            head = _git("rev-parse", "--verify", "--quiet", "HEAD")
+            diff = _git("diff", "HEAD") if head.returncode == 0 else _git("diff")
     except (OSError, subprocess.TimeoutExpired) as exc:
-        return _git_failure(root, exc, entries=entries)
+        return _git_failure(root, exc, entries=entries, commits=commits)
     if diff.returncode == 0:
         if len(diff.stdout) > DIFF_MAX_BYTES:
             diff_text = diff.stdout[:DIFF_MAX_BYTES]
@@ -384,20 +424,29 @@ def git_changes(cwd: str, runner: Optional[Callable] = None) -> dict:
         "available": True,
         "is_git_repo": True,
         "entries": entries,
+        "commits": commits,
         "diff": diff_text,
         "truncated": truncated,
+        "ref": target_ref,
         "error": None,
     }
 
 
-def _git_failure(root: Path, exc: Exception, entries: Optional[List] = None) -> dict:
+def _git_failure(
+    root: Path,
+    exc: Exception,
+    entries: Optional[List] = None,
+    commits: Optional[List] = None,
+) -> dict:
     return {
         "cwd": str(root),
         "available": False,
         "is_git_repo": None,
         "entries": entries or [],
+        "commits": commits or [],
         "diff": None,
         "truncated": False,
+        "ref": None,
         "error": f"git unavailable: {exc}",
     }
 

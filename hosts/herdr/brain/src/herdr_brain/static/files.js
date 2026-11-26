@@ -86,7 +86,11 @@
    * previews ONE file at a time). Each chunk keeps its raw body and a
    * display name parsed from the +++ line (falling back to the diff
    * --git header); a part without any resolvable name is not a file
-   * chunk (garbage text) and is skipped. */
+   * chunk (garbage text) and is skipped.
+   *
+   * Lazygit-style additions/deletions counts and per-line classification
+   * (add, del, hunk, header, ctx) are computed here so the UI can color
+   * lines deterministically without raw HTML injection. */
   function diffFiles(diffText) {
     var text = typeof diffText === "string" ? diffText : "";
     if (!text) return [];
@@ -104,9 +108,60 @@
         if (header) name = header[1].trim();
       }
       if (!name) continue;
-      chunks.push({ file: name, body: "diff --git " + body });
+
+      var lines = body.split("\n");
+      var additions = 0;
+      var deletions = 0;
+      var parsedLines = [];
+      for (var j = 0; j < lines.length; j++) {
+        var line = lines[j];
+        var kind = "ctx";
+        if (line.startsWith("@@")) {
+          kind = "hunk";
+        } else if (line.startsWith("+") && !line.startsWith("+++")) {
+          kind = "add";
+          additions++;
+        } else if (line.startsWith("-") && !line.startsWith("---")) {
+          kind = "del";
+          deletions++;
+        } else if (
+          line.startsWith("diff --git") ||
+          line.startsWith("index ") ||
+          line.startsWith("--- ") ||
+          line.startsWith("+++ ") ||
+          line.startsWith("new file ") ||
+          line.startsWith("deleted file ") ||
+          line.startsWith("similarity index ") ||
+          line.startsWith("rename ")
+        ) {
+          kind = "header";
+        }
+        parsedLines.push({ kind: kind, text: line });
+      }
+
+      chunks.push({
+        file: name,
+        body: "diff --git " + body,
+        additions: additions,
+        deletions: deletions,
+        parsedLines: parsedLines,
+      });
     }
     return chunks;
+  }
+
+  var STATUS_BADGES = {
+    M: { code: "M", cls: "diff-badge-m" },
+    A: { code: "A", cls: "diff-badge-a" },
+    D: { code: "D", cls: "diff-badge-d" },
+    R: { code: "R", cls: "diff-badge-m" },
+    "?": { code: "?", cls: "diff-badge-u" },
+    U: { code: "!", cls: "diff-badge-d" },
+  };
+
+  function statusBadge(status) {
+    var first = (status || "?").trim().charAt(0);
+    return STATUS_BADGES[first] || { code: first || "?", cls: "diff-badge-m" };
   }
 
   /* One status count line: "2 modificados, 1 sin seguimiento". */
@@ -146,6 +201,7 @@
     treeRows: treeRows,
     diffFiles: diffFiles,
     statusSummary: statusSummary,
+    statusBadge: statusBadge,
   };
 
   if (typeof module !== "undefined" && module.exports) {

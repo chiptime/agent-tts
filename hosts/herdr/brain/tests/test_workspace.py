@@ -275,6 +275,19 @@ class TestGitChanges:
         assert payload["entries"] == []
         assert payload["diff"] == ""
         assert payload["truncated"] is False
+        assert len(payload["commits"]) >= 1
+        assert payload["commits"][0]["message"] == "init"
+
+    def test_inspect_commit_ref_shows_diff(self, repo):
+        payload = git_changes(str(repo), ref="HEAD")
+        assert payload["available"] is True
+        assert payload["ref"] == "HEAD"
+        assert payload["diff"] != ""
+        assert "hello workspace" in payload["diff"]
+
+    def test_unsafe_ref_is_ignored_and_treated_as_default(self, repo):
+        payload = git_changes(str(repo), ref="--dangerous-flag")
+        assert payload["ref"] is None
 
     def test_modified_file_appears_in_status_and_diff(self, repo):
         (repo / "readme.md").write_text("changed!\n", encoding="utf-8")

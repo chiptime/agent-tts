@@ -1914,6 +1914,87 @@
       color: var(--accent);
       border-color: var(--accent);
     }
+    .files-commit-bar {
+      flex: 0 0 auto;
+      display: flex;
+      gap: 6px;
+      overflow-x: auto;
+      padding: 4px 6px 6px;
+      border-bottom: 1px solid var(--line);
+      align-items: center;
+      scrollbar-width: thin;
+    }
+    .files-commit-chip {
+      flex: 0 0 auto;
+      font-size: 11px;
+      padding: 2px 8px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel);
+      color: var(--muted);
+      cursor: pointer;
+      white-space: nowrap;
+      transition: all 0.15s ease;
+    }
+    .files-commit-chip.active, .files-commit-chip:hover {
+      border-color: var(--accent);
+      color: var(--text);
+    }
+    .files-commit-chip.active {
+      background: rgba(18, 133, 92, 0.15);
+      border-color: #12855c;
+      color: #7ee787;
+    }
+    .diff-line {
+      display: block;
+      padding: 0 4px;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    .diff-line-add {
+      background: rgba(46, 160, 67, 0.18);
+      color: #7ee787;
+    }
+    .diff-line-del {
+      background: rgba(248, 81, 73, 0.18);
+      color: #f85149;
+    }
+    .diff-line-hunk {
+      background: rgba(56, 139, 253, 0.15);
+      color: #79c0ff;
+      font-weight: 600;
+      margin: 4px 0 2px;
+      padding: 2px 4px;
+      border-radius: 3px;
+    }
+    .diff-line-header {
+      color: var(--muted);
+      opacity: 0.8;
+      font-size: 10px;
+    }
+    .diff-badge {
+      display: inline-block;
+      font-size: 10px;
+      font-weight: 700;
+      line-height: 1;
+      padding: 2px 5px;
+      border-radius: 3px;
+      margin-right: 5px;
+      vertical-align: middle;
+    }
+    .diff-badge-m { background: #d29922; color: #111; }
+    .diff-badge-a { background: #3fb950; color: #111; }
+    .diff-badge-d { background: #f85149; color: #fff; }
+    .diff-badge-u { background: #a371f7; color: #fff; }
+    .diff-stat-add { color: #7ee787; font-weight: 600; margin-left: 5px; }
+    .diff-stat-del { color: #f85149; font-weight: 600; margin-left: 3px; }
+    .files-row-badge {
+      font-size: 9px;
+      font-weight: 700;
+      padding: 1px 4px;
+      border-radius: 2px;
+      margin-left: 6px;
+    }
     .glabel {
       display: block;
       font-size: 11px;
@@ -3395,6 +3476,7 @@
           <span id="files-diff-summary" class="files-meta"></span>
           <button id="files-diff-close" type="button" aria-label="Cerrar cambios" data-i18n-aria-label="files.close">✕</button>
         </div>
+        <div id="files-commit-bar" class="files-commit-bar hidden" role="tablist" aria-label="Historial de commits"></div>
         <div id="files-diff-files" role="listbox" aria-label="Ficheros cambiados" data-i18n-aria-label="files.diff_files_aria"></div>
         <pre id="files-diff-content" class="view-screen files-pre"></pre>
       </div>
@@ -3412,6 +3494,7 @@
     <div id="mic-note" class="hidden"></div>
     <div class="controls">
       <button id="pause-btn" class="side-btn hidden" data-i18n="call.pause">⏸ Pausa</button>
+      <button id="call-test-stream" class="side-btn" title="Probar streaming de voz sin usar el micrófono" aria-label="Probar streaming de voz">⚡ Probar voz</button>
       <button id="call-btn" data-i18n="call.start">📞 Llamar</button>
       <button id="stop-audio" class="side-btn hidden" data-i18n="call.stop_audio">■ Parar audio</button>
     </div>
