@@ -2473,6 +2473,7 @@
     refreshMirror();
     refreshView();
     refreshConversation();
+    if (currentAgentTabId === "files") refreshWorkspaceFiles();
   }
 
   /* Voice session switching (S5/S7): a switch_session turn (or an
@@ -4517,7 +4518,7 @@
 
   function workspaceFilesQuery(extra) {
     var pairs = [];
-    var paneId = replyKeys.getAttribute("data-pane") || "";
+    var paneId = (typeof effectivePaneForReads === "function" ? effectivePaneForReads() : (selectedPane || lastEffectivePane)) || (replyKeys && replyKeys.getAttribute("data-pane")) || "";
     if (paneId) pairs.push("pane_id=" + encodeURIComponent(paneId));
     if (extra) {
       for (var key in extra) {
@@ -4631,11 +4632,14 @@
     if (typeof body.size === "number") bits.push(window.FilesExplorer.formatSize(body.size));
     filesViewerMeta.textContent = bits.join(" · ");
     filesViewerContent.textContent = body.binary ? "" : (body.content || "");
+    filesTree.classList.add("hidden");
+    filesDiff.classList.add("hidden");
     filesViewer.classList.remove("hidden");
   }
 
   function openWorkspaceChanges() {
     setFilesStatus(t("files.loading"));
+    filesViewer.classList.add("hidden");
     fetchWorkspaceJson("/workspace/changes" + workspaceFilesQuery(), paintWorkspaceDiff);
   }
 
@@ -4672,6 +4676,10 @@
       return;
     }
     setFilesStatus(body.truncated ? t("files.truncated") : "");
+
+    filesTree.classList.add("hidden");
+    filesViewer.classList.add("hidden");
+    filesDiff.classList.remove("hidden");
 
     // Update status map for badges in tree and chips
     filesStatusMap = {};
@@ -4738,8 +4746,6 @@
     } else {
       for (var i = 0; i < chunks.length; i++) paintDiffChip(chunks[i], i === 0);
     }
-    filesViewer.classList.add("hidden");
-    filesDiff.classList.remove("hidden");
   }
 
   function paintDiffChip(chunk, selected) {
@@ -4791,9 +4797,11 @@
   filesChangesBtn.addEventListener("click", openWorkspaceChanges);
   filesViewerClose.addEventListener("click", function () {
     filesViewer.classList.add("hidden");
+    filesTree.classList.remove("hidden");
   });
   filesDiffClose.addEventListener("click", function () {
     filesDiff.classList.add("hidden");
+    filesTree.classList.remove("hidden");
   });
 
   function toggleHistoryFind(force) {
