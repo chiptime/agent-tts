@@ -497,6 +497,13 @@
    * post-write snapshot). A delayed boot response can therefore never
    * overwrite a newer explicit selection. */
   var sharedRevision = -1;
+  /* W3-P1: the brain advertises server-side GLM streaming for live-call
+   * turns (GET /call/context → streaming_ask). When set, this client
+   * starts its /speech/{id}/next polling as soon as it dispatches /ask —
+   * the server synthesizes sentence segments DURING generation, so the
+   * first audio can play before the answer exists. Absent on older
+   * brains: no speculative polls, response-time start exactly as before. */
+  var serverStreamsAsk = false;
 
   function applySharedContext(data) {
     if (!data || typeof data.call_id !== "string" || !data.call_id) return;
@@ -505,6 +512,7 @@
     try { localStorage.setItem(SESSION_KEY, sessionId); } catch (err) { /* private mode */ }
     if (stale) return;  // older snapshot: the newer local/shared intent stays
     if (typeof data.revision === "number") sharedRevision = data.revision;
+    serverStreamsAsk = data.streaming_ask === true;
     if (typeof data.pane_id === "string" && data.pane_id) {
       selectedPane = data.pane_id;
       try { localStorage.setItem(PANE_KEY, selectedPane); } catch (err) { /* private mode */ }
@@ -5869,7 +5877,17 @@
     // here — a momentarily empty queue is not final playback; the
     // segment job's completion status owns that seam below.
     approvalFlow.noteItemPlayed(finished);
-    if (!audioQueue.some(function (queued) { return !queued.announcement; }) && inCall && callState === "speaking") {
+    if (earlyAskStillGenerating()) {
+      // W3-P1: the answer's early audio paused or drained while its ask
+      // is still generating — never re-arm the mic over an in-flight
+      // ask. With nothing ready the call shows thinking again; the
+      // ask's finalizer re-arms once the answer exists.
+      stopBargeInMonitor();
+      if (!audioQueue.some(function (queued) { return !queued.announcement; })) {
+        handBackToThinking();
+      }
+      pumpAudio();  // a segment already staged (or an announcement) still flows
+    } else if (!audioQueue.some(function (queued) { return !queued.announcement; }) && inCall && callState === "speaking") {
       // The turn's audio is fully drained: the monitor's job is over,
       // and it must die BEFORE the mic re-arms (a live monitor hearing
       // the user's next words would cancel the NEXT turn's job).
@@ -5912,8 +5930,16 @@
     }
     stopBtn.classList.add("hidden");
     if (inCall && callState === "speaking") {
-      setCallState(micBaseState());
-      startListening();
+      if (earlyAskStillGenerating()) {
+        // W3-P1: a manual stop of audio whose ask is still generating
+        // cancels the SPEECH only — the turn's text still lands — and
+        // keeps the mic off: the call shows thinking until the response,
+        // and the ask's finalizer re-arms it.
+        handBackToThinking();
+      } else {
+        setCallState(micBaseState());
+        startListening();
+      }
     }
   }
 
@@ -7115,9 +7141,31 @@
    * clobbered by an older turn's cleanup. */
   var askAbort = null;
 
+  /* W3-P1: the speech id of an ask that is STILL GENERATING while its
+   * early audio (segments staged mid-generation) plays. While set, the
+   * call never re-arms the mic: an utterance dispatched now would
+   * overlap the in-flight ask. When that audio stops — a segment ended
+   * before the next one is staged, or a manual stop — the call hands
+   * back to THINKING and the ask's finalizer owns the re-arm. The
+   * finalizer is the only clearer, so an aborted ask clears it too. */
+  var earlyAskJob = null;
+
+  function earlyAskStillGenerating() {
+    return !!earlyAskJob && inCall;
+  }
+
+  function handBackToThinking() {
+    if (callState === "speaking") {
+      setCallState("thinking");
+      showThinkingBubble();
+    }
+  }
+
   function ask(text, opts) {
     opts = opts || {};
-    if (callState === "thinking") return Promise.resolve();
+    // W3-P1: a turn still generating behind its early audio owns the
+    // call exactly like a thinking one — no second ask may overlap it.
+    if (callState === "thinking" || earlyAskStillGenerating()) return Promise.resolve();
     cancelGlanceTap();
     if (karaokeCtl.state().plan) karaokeCtl.stop();
     askCount += 1;
@@ -7169,6 +7217,24 @@
       options = Object.assign({}, options || {}, { signal: myAbort.signal });
       return fetchWithTimeout(url, options, timeoutMs);
     };
+    /* W3-P1: the brain streams tokens server-side, so sentence segments
+     * are staged WHILE /ask generates. The client minted the speech id
+     * up front, so the segment player can start long-polling /next right
+     * now — first audio lands mid-generation (~1-2 s), not at response
+     * time. Only live-call conversation turns stream server-side, and
+     * only on a brain that advertises it (streaming_ask in
+     * /call/context); speech.js needs no change — first:null starts a
+     * bare long-poll. When /ask resolves, the response handler does NOT
+     * restart an already-polling player for the same id. A rejoin
+     * dispatch (S7) is excluded: it keeps the capture ARMED through
+     * thinking so the speaker is never cut (PRD-06 D3) — early audio
+     * would reach that capture (echo) and end the window, so those
+     * turns keep the response-time start. Only a dispatch whose capture
+     * is already down may play while generating. */
+    if (serverStreamsAsk && inCall && speech.speech_request_id && !keepLiveCapture) {
+      earlyAskJob = speech.speech_request_id;
+      segmentPlayer.start({ id: speech.speech_request_id, sessionId: sessionId, first: null });
+    }
     /* /ask spans the FULL consult turn (up to 60 s engine budget plus
      * model + TTS shaping) — the fixed 90 s policy AND the request
      * shape live in consult.js (Consult.requestAsk, tested in
@@ -7222,25 +7288,42 @@
           // A chunk tap may have cancelled this identity while /ask was in
           // flight. Keep its answer, but never revive the retired audio job.
           if (!speech.speech_request_id || speechCtl.activeId() === speech.speech_request_id) {
+            /* W3-P1: a speculative player may already be polling this id
+             * since ask dispatch — restarting it would reset the segment
+             * cursors and double-enqueue segment zero. */
+            var alreadyPolling = !!speech.speech_request_id &&
+              segmentPlayer.state().id === speech.speech_request_id &&
+              !segmentPlayer.state().stopped;
+            if (liveTiming && data.speech && typeof data.speech.first_sentence_ms === "number") {
+              liveTiming.serverFirstSentenceMs = data.speech.first_sentence_ms;
+            }
+            if (liveTiming && data.speech && typeof data.speech.first_segment_ms === "number") {
+              liveTiming.serverFirstSegmentMs = data.speech.first_segment_ms;
+            }
             if (data.speech && data.speech.status === "delivering") {
               /* Protocol-2 streaming turn: the answer arrives as segments
                * through /speech/{id}/next and enters the SAME sequential
                * queue (seq rides each item; onAudioEnded advances the ack).
                * The enqueue below still covers legacy turns AND v1-degraded
                * identified turns (full file with audio_url). */
-              segmentPlayer.start({ id: speech.speech_request_id, sessionId: sessionId,
-                first: data.audio_url && data.speech.first_seq === 0 ? {
-                  seq: 0, audio_url: data.audio_url, is_final: !!data.speech.first_is_final
-                } : null });
+              if (!alreadyPolling) {
+                segmentPlayer.start({ id: speech.speech_request_id, sessionId: sessionId,
+                  first: data.audio_url && data.speech.first_seq === 0 ? {
+                    seq: 0, audio_url: data.audio_url, is_final: !!data.speech.first_is_final
+                  } : null });
+              }
               stashLiveTurnTimingAudio();  // PRD-02: playback initiated
             } else if (data.audio_url) {
+              if (alreadyPolling) segmentPlayer.stop("response-shape");
               enqueueAudio(data.audio_url, null, speech.speech_request_id);
               stashLiveTurnTimingAudio();  // PRD-02: playback initiated
             } else {
+              if (alreadyPolling) segmentPlayer.stop("response-shape");
               speechCtl.release(speech.speech_request_id);
               if (!data.approval) afterAnswer();
             }
-          }          if (data.approval) {
+          }
+          if (data.approval) {
             // A gate opened (PRD §4): enter confirming with the countdown
             // while the spoken echo ("… ¿Se envía?") plays through the
             // normal queue; onAudioEnded re-arms the mic under confirming.
@@ -7287,6 +7370,9 @@
           interimTextEl.textContent = "";
           renderInterimStrip();
         }
+        /* W3-P1: the early-audio ask is over — from here the ordinary
+         * segment flow owns the mic again (onAudioEnded's re-arm). */
+        if (earlyAskJob === speech.speech_request_id) earlyAskJob = null;
         // A barge-in moved the call on (listening/recording): its own
         // recovery owns the mic; this stale finalizer must not restart it.
         if (callState === "thinking") afterAnswer();
@@ -8476,7 +8562,15 @@
     liveTiming.pending = {
       reason: "audio",
       ask_audio_ms: liveTimingDelta(liveTiming.askDoneAt, at),
-      total_ms: liveTimingDelta(liveTiming.closeAt, at)
+      total_ms: liveTimingDelta(liveTiming.closeAt, at),
+      /* W3-P1 (PRD-02/FR-07): the brain's own first-sentence and
+       * first-segment times for this turn (ms from turn start) ride the
+       * playback report so the streaming improvement against the
+       * baseline is measurable. Older brains never set them: -1. */
+      first_sentence_ms: (liveTiming.serverFirstSentenceMs != null)
+        ? liveTiming.serverFirstSentenceMs : -1,
+      first_segment_ms: (liveTiming.serverFirstSegmentMs != null)
+        ? liveTiming.serverFirstSegmentMs : -1
     };
   }
 

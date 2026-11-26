@@ -1462,10 +1462,15 @@ async def handle_call_stream(
 
                     logger.info(
                         "live turn timing: reason=%s close_dispatch_ms=%d "
-                        "dispatch_ask_ms=%d ask_audio_ms=%d total_ms=%d",
+                        "dispatch_ask_ms=%d ask_audio_ms=%d total_ms=%d "
+                        "first_sentence_ms=%d first_segment_ms=%d",
                         _tok("reason", 8),
                         _ms("close_dispatch_ms"), _ms("dispatch_ask_ms"),
                         _ms("ask_audio_ms"), _ms("total_ms"),
+                        # W3-P1 (PRD-06 FR-07): the brain's first-sentence
+                        # and first-segment times (ms from turn start) ride
+                        # the audio report; -1 when the turn never streamed.
+                        _ms("first_sentence_ms"), _ms("first_segment_ms"),
                     )
                     continue
                 if cmd == "turn_probe":

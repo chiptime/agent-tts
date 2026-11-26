@@ -100,6 +100,7 @@ from .speech import (
     RegistryFull,
     SegmentedSpeechProducer,
     SentenceSpeechProducer,
+    StreamingSentenceSpeechProducer,
 
     SpeechJob,
     SpeechRegistry,
@@ -1209,6 +1210,13 @@ def _next_terminal_broken(phase: str) -> bool:
 # running either way — it stops at its own next cooperative check.
 ASK_DISCONNECT_POLL_S = 0.25
 ASK_CANCEL_GRACE_S = 1.0
+
+# W3-P1: bounded wait for the streamed first segment so the /ask
+# response can still carry its audio_url when synthesis keeps pace with
+# generation; a slow render never wedges the response — /next (VS2.5)
+# serves the segment whenever it lands. Read at use time
+# (monkeypatch-friendly in tests).
+FIRST_SEGMENT_WAIT_S = 2.0
 
 
 def _mark_phase_quietly(
@@ -2349,7 +2357,15 @@ def create_app(
         client — phone or laptop — adopts as its session id, plus the
         pane selection published by whichever client chose last. Read
         at boot by the PWA; never carries approval authority."""
-        return call_context_store.snapshot()
+        payload = call_context_store.snapshot()
+        # W3-P1 capability hint (additive): this build streams GLM
+        # tokens server-side for conversational turns. A client that
+        # sees it may start its /speech/{id}/next polling as soon as it
+        # dispatches /ask, so first audio can land mid-generation.
+        # Older brains omit the key — clients keep the response-time
+        # start and every test stub stays free of new traffic.
+        payload["streaming_ask"] = True
+        return payload
 
     @app.post("/call/context")
     def call_context_select(body: CallContextRequest) -> dict:
@@ -2374,7 +2390,12 @@ def create_app(
                     detail="pane_id must be a short single-line pane identifier",
                 )
         locale = body.locale.strip().lower() if body.locale else None
-        return call_context_store.select(pane, locale=locale)
+        payload = call_context_store.select(pane, locale=locale)
+        # W3-P1: the POST response IS the applied snapshot — it must carry
+        # the same capability hint as the GET, or a client's pane publish
+        # would flip its streaming awareness back off.
+        payload["streaming_ask"] = True
+        return payload
 
     @app.get("/state")
     def state() -> dict:
@@ -3043,6 +3064,11 @@ def create_app(
             pending = approval_store.begin_turn(body.session_id, decision_intent)
             if pending is not None:
                 return _pending_gate_turn(pending, body, job, degraded)
+            # W3-P1 streaming producer (None unless this turn streams).
+            # Created BEFORE llm.ask so its sentence sink is live while
+            # the model is still generating — synthesis starts at the
+            # first complete sentence boundary, not after the answer.
+            streaming_producer = None
             try:
                 # Inside the guarded zone: get_llm() itself raises
                 # BrainLLMError (missing GLM_API_KEY) and must keep
@@ -3064,6 +3090,21 @@ def create_app(
                 turn_device = audit_device(request)
                 if turn_device:
                     ask_kwargs["device"] = turn_device
+                # W3-P1 (same marker convention): only a sink-capable LLM
+                # streams. A registry-degraded turn has no job to stage
+                # segments into and keeps the legacy text-only shape.
+                if (
+                    body.conversation
+                    and job is not None
+                    and getattr(llm, "takes_sentence_sink", False)
+                ):
+                    streaming_producer = StreamingSentenceSpeechProducer(
+                        cfg, speech_jobs, job, speak_answer
+                    )
+                    job.segments = streaming_producer.buffer
+                    job.producer = streaming_producer
+                    streaming_producer.start()
+                    ask_kwargs["sentence_sink"] = streaming_producer.enqueue
                 result = llm.ask(
                     body.text,
                     session_id=body.session_id,
@@ -3074,12 +3115,16 @@ def create_app(
                 # Only the disconnect watch sets that event: the turn is
                 # abandoned. Converge the job on cancelled — abandon's
                 # request_cancel may have landed first; quiet either way.
+                if streaming_producer is not None:
+                    streaming_producer.abort()
                 if job is not None:
                     _mark_phase_quietly(speech_jobs, job.id, PHASE_CANCELLED)
                 raise HTTPException(
                     status_code=499, detail="client disconnected during ask"
                 )
             except BrainLLMError as exc:
+                if streaming_producer is not None:
+                    streaming_producer.abort()
                 if job is not None:
                     # The turn died before shaping: failed is terminal, so the
                     # id frees for the client's retry instead of sticking.
@@ -3107,6 +3152,8 @@ def create_app(
                     approval_store.cancel_proposed(
                         opened.gate_id, expected_revision=opened.revision
                     )
+                if streaming_producer is not None:
+                    streaming_producer.abort()
                 if job is not None:
                     _mark_phase_quietly(speech_jobs, job.id, PHASE_CANCELLED)
                 raise HTTPException(
@@ -3158,6 +3205,44 @@ def create_app(
                 response["speech"] = {"id": job.id, "status": job.phase}
                 return response
             if body.conversation:
+                if streaming_producer is not None:
+                    # W3-P1 streaming turn: the producer was started
+                    # BEFORE llm.ask and the sentences already reached
+                    # synthesis during generation. Close the stream —
+                    # the approval closer rides as the final spoken
+                    # sentence so the gate question keeps the exact
+                    # batch-path wording — then shape the response from
+                    # the producer's ACTUAL progress. A bounded wait
+                    # lets a fast render carry audio_url in the
+                    # response; a slow one never wedges the turn, /next
+                    # (VS2.5) serves the segment later.
+                    closer = None
+                    if result.get("approval") is not None:
+                        closer = locale_approval_closer(call_context_store.locale())
+                    streaming_producer.finish(closer)
+                    streaming_producer.wait_first_segment(FIRST_SEGMENT_WAIT_S)
+                    broken = _next_terminal_broken(job.phase)
+                    response = shape_ask_response(result, speak=False)
+                    response["audio_url"] = (
+                        None if broken else streaming_producer.first_audio_url
+                    )
+                    response["speech"] = {
+                        "id": job.id,
+                        # "delivering" is the contract's dispatch literal
+                        # (T5): active or already-complete jobs stream
+                        # through /next; only a BROKEN terminal phase
+                        # (cancel/failed/degraded) is reported verbatim.
+                        "status": job.phase if broken else "delivering",
+                        "first_seq": 0,
+                        "first_is_final": (
+                            False if broken else streaming_producer.is_final_first()
+                        ),
+                        # PRD-02/FR-07 improvement timings (ms from turn
+                        # start; -1 when the stage never ran).
+                        "first_sentence_ms": streaming_producer.first_sentence_ms(),
+                        "first_segment_ms": streaming_producer.first_segment_ms(),
+                    }
+                    return response
                 producer = SentenceSpeechProducer(
                     cfg, speech_jobs, job, speakable_answer(result), speak_answer,
                 )

@@ -271,6 +271,7 @@ def test_context_validation_and_read_only_endpoints_preserve_data(live_service,t
     assert same["revision"]==original["revision"]+1
     cleared=client.post("/call/context",json={"pane_id":None}).json()
     # Spoken-locale field (server-side i18n): additive, defaults to es.
+    # W3-P1 capability hint (streaming_ask) rides the applied snapshot.
     assert cleared=={"call_id":"default","pane_id":None,
-                     "revision":same["revision"]+1,"locale":"es"}
+                     "revision":same["revision"]+1,"locale":"es","streaming_ask":True}
     assert data_hashes()==before

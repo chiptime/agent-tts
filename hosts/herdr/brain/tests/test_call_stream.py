@@ -201,6 +201,10 @@ def test_turn_timing_logs_stage_breakdown(tmp_path, caplog):
                 "ask_audio_ms": 640,
                 "total_ms": 3923,
                 "close_dispatch_ms": "not-a-number",  # rejected -> -1
+                # W3-P1 (PRD-06 FR-07): the brain's own first-sentence and
+                # first-segment times ride the playback report.
+                "first_sentence_ms": 1180,
+                "first_segment_ms": 1520,
             })
             time.sleep(0.15)
 
@@ -213,6 +217,11 @@ def test_turn_timing_logs_stage_breakdown(tmp_path, caplog):
     assert "total_ms=3283" in text
     assert "reason=audio" in text
     assert "ask_audio_ms=640" in text
+    # W3-P1: the streaming timings land in the same line; the ask report
+    # (no such stages yet) reports -1 for both.
+    assert "first_sentence_ms=1180" in text
+    assert "first_segment_ms=1520" in text
+    assert "first_sentence_ms=-1" in text  # the ask report's missing stages
     # A non-numeric field degrades to -1, never crashes the socket.
     assert "close_dispatch_ms=-1" in text
 
