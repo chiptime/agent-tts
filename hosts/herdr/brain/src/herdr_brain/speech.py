@@ -810,3 +810,207 @@ class SentenceSpeechProducer(SegmentedSpeechProducer):
             self._mark(PHASE_COMPLETE)
         except Exception:
             self._mark(PHASE_CANCELLED if self._job.cancel_event.is_set() else PHASE_FAILED)
+
+
+class StreamingSentenceSpeechProducer:
+    """Protocol-2 producer fed by the LLM's STREAMED sentences (W3-P1).
+
+    PRD-06: synthesis begins at the first complete sentence boundary
+    while the answer is still being generated. The turn thread (inside
+    ``BrainLLM.ask``) hands each sentence to :meth:`enqueue`; an owned
+    worker thread renders them SEQUENTIALLY through the exact same
+    cancellable render seam the batch conversation path uses
+    (``speak_answer``) and stages every segment into the job's bounded
+    :class:`SegmentBuffer` — so /next (VS2.5), the ack watermarks and
+    every cancel path work unchanged, and the client's segmentPlayer
+    needs no modification.
+
+    Phases ride the registry's guarded marks: rendering at ``start()``,
+    delivering on the first staged segment, and exactly one terminal
+    phase — cancelled (job cancel event), failed (render error),
+    degraded (queue overflow past SPEECH_MAX_SEGMENTS, the same hard
+    cap as the host-side producer) or complete when the stream was
+    finished and drained.
+
+    Lifecycle seams: :meth:`finish` is called by the turn thread after
+    ``llm.ask`` returns (optionally appending the deterministic approval
+    closer so the spoken stream ends with the same shaped text the
+    batch path speaks); :meth:`abort` is called by the turn's failure
+    handlers so the worker exits promptly without ever marking a
+    completion over a failed turn. Timing accessors
+    (``first_sentence_ms`` / ``first_segment_ms``, FR-07) report
+    milliseconds from producer creation, -1 when the stage never ran.
+
+    The producer is deliberately single-customer: exactly one turn
+    thread enqueues and exactly one worker drains — the Condition needs
+    no further synchronization and nothing here is reentrant.
+    """
+
+    def __init__(self, settings, registry: SpeechRegistry, job: SpeechJob, render):
+        self._settings = settings
+        self._registry = registry
+        self._job = job
+        self._render = render
+        self.buffer = SegmentBuffer()
+        self.first_audio_url: Optional[str] = None
+        # The worker thread (None until start()); tests join it.
+        self.thread: Optional[threading.Thread] = None
+        self._queue: list[str] = []
+        self._cond = threading.Condition()
+        self._closed = False      # finish()/abort() seen: nothing more enqueues
+        self._overflow = False    # SPEECH_MAX_SEGMENTS exceeded: degrade
+        self._aborted = False     # abort(): never mark COMPLETE on exit
+        self._t0 = time.monotonic()
+        self.first_sentence_ts: Optional[float] = None
+        self.first_segment_ts: Optional[float] = None
+
+    # -- guarded phase transition (terminal exactly once) --------------------
+
+    def _mark(self, phase: str) -> bool:
+        """Registry mark tolerating a JobAlreadyTerminal race — whoever
+        lands second (worker vs the turn's own handlers) must not turn
+        an honest terminal phase into a 500."""
+        try:
+            self._registry.mark(self._job.id, phase)
+            return True
+        except JobAlreadyTerminal:
+            return False
+
+    # -- turn-thread API ------------------------------------------------------
+
+    def enqueue(self, sentence: str) -> None:
+        """One complete sentence handed over by the streaming LLM round.
+
+        Never blocks the generation thread for longer than a lock: the
+        queue is bounded at SPEECH_MAX_SEGMENTS and an overflowing
+        stream flips the overflow flag (the worker degrades the job
+        visibly, mirroring the host-side producer's hard cap). Empty or
+        whitespace-only sentences are dropped; once the job's cancel
+        event fires, everything is dropped silently — speech is done.
+        """
+        if not sentence or not sentence.strip():
+            return
+        with self._cond:
+            if self._closed or self._overflow or self._job.cancel_event.is_set():
+                return
+            if len(self._queue) + 1 > SPEECH_MAX_SEGMENTS:
+                self._overflow = True
+                self._cond.notify_all()
+                return
+            self._queue.append(sentence)
+            if self.first_sentence_ts is None:
+                self.first_sentence_ts = time.monotonic()
+            self._cond.notify_all()
+
+    def finish(self, final_sentence: Optional[str] = None) -> None:
+        """Ends the stream; the worker completes after draining. The
+        optional closer (the approval gate's deterministic question)
+        rides as the last spoken sentence."""
+        with self._cond:
+            if self._closed:
+                return
+            if final_sentence and not self._job.cancel_event.is_set():
+                self._queue.append(final_sentence)
+            self._closed = True
+            self._cond.notify_all()
+
+    def abort(self) -> None:
+        """Stops the worker promptly on a turn failure. The caller owns
+        the terminal phase (its _mark_phase_quietly runs after); this
+        producer deliberately marks NOTHING here, and its exit path
+        suppresses the completion mark so a failed turn never ends up
+        looking complete."""
+        with self._cond:
+            self._closed = True
+            self._aborted = True
+            self._queue.clear()
+            self._cond.notify_all()
+
+    # -- response-path helpers -------------------------------------------------
+
+    def start(self) -> None:
+        """Marks rendering and spawns the daemon worker thread."""
+        self._mark(PHASE_RENDERING)
+        self.thread = threading.Thread(
+            target=self._run, name=f"stream-{self._job.id}", daemon=True
+        )
+        self.thread.start()
+
+    def wait_first_segment(self, timeout_s: float) -> None:
+        """Bounded wait for segment 0 so the /ask response can carry its
+        URL; a slow render never wedges the response — /next serves the
+        segment whenever it lands."""
+        deadline = time.monotonic() + timeout_s
+        while self.first_audio_url is None and not is_terminal_phase(self._job.phase):
+            if time.monotonic() >= deadline:
+                return
+            time.sleep(SEGMENT_POLL_S)
+
+    def is_final_first(self) -> bool:
+        """True when the first staged segment is also the last one the
+        client will ever see (job complete, single segment)."""
+        return self._job.phase == PHASE_COMPLETE and len(self.buffer.snapshot()) == 1
+
+    def first_sentence_ms(self) -> int:
+        return self._relative_ms(self.first_sentence_ts)
+
+    def first_segment_ms(self) -> int:
+        return self._relative_ms(self.first_segment_ts)
+
+    def _relative_ms(self, ts: Optional[float]) -> int:
+        if ts is None:
+            return -1
+        return int((ts - self._t0) * 1000)
+
+    # -- worker ----------------------------------------------------------------
+
+    def _run(self) -> None:
+        seq = 0
+        delivering = False
+        while True:
+            overflow = False
+            sentence: Optional[str] = None
+            with self._cond:
+                while not self._queue and not self._closed and not self._overflow:
+                    if self._job.cancel_event.is_set():
+                        break
+                    self._cond.wait(timeout=SEGMENT_POLL_S)
+                if self._queue:
+                    sentence = self._queue.pop(0)
+                elif self._overflow:
+                    overflow = True
+            if self._job.cancel_event.is_set():
+                self._mark(PHASE_CANCELLED)
+                return
+            if overflow:
+                self._mark(PHASE_DEGRADED)
+                return
+            if sentence is None:
+                break  # stream finished and drained
+            if seq >= SPEECH_MAX_SEGMENTS:
+                self._mark(PHASE_DEGRADED)
+                return
+            url = self._render(sentence, self._job.cancel_event)
+            if not url or self._job.cancel_event.is_set():
+                self._mark(
+                    PHASE_CANCELLED if self._job.cancel_event.is_set() else PHASE_FAILED
+                )
+                return
+            if self.first_audio_url is None:
+                self.first_audio_url = url
+            audio = self._settings.audio_dir / Path(url).name
+            if not self.buffer.add(
+                {"seq": seq, "file": audio.name, "bytes": audio.stat().st_size},
+                cancel_event=self._job.cancel_event,
+            ):
+                self._mark(
+                    PHASE_CANCELLED if self._job.cancel_event.is_set() else PHASE_DEGRADED
+                )
+                return
+            if not delivering:
+                delivering = True
+                self.first_segment_ts = time.monotonic()
+                self._mark(PHASE_DELIVERING)
+            seq += 1
+        if not self._aborted and not self._job.cancel_event.is_set():
+            self._mark(PHASE_COMPLETE)

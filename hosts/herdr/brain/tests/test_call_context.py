@@ -125,6 +125,10 @@ class TestCallContextEndpoint:
         assert resp.json() == {
             "call_id": DEFAULT_SESSION, "pane_id": None, "revision": 0,
             "locale": "es",
+            # W3-P1 capability hint (additive): this build streams GLM
+            # tokens for conversational turns; clients may poll
+            # /speech/{id}/next from ask dispatch.
+            "streaming_ask": True,
         }
 
     def test_select_pane_publishes_and_bumps_revision(self, audio_dir, monkeypatch):

@@ -27,14 +27,15 @@ Branch: `feat/w3-p1-live-streaming`; base: `35a537a`; runner: pytest from `hosts
 - Compatibilidad: `BrainLLM.takes_sentence_sink = True` marker (convención `takes_cancel_event`); `ask(sentence_sink=None)` legacy byte-comparable; fakes sin marker → ruta legacy intacta (SentenceSpeechProducer).
 
 ## Tasks
-- [ ] T1 S1, S2: LLM token streaming + sentence-chunked protocol-2 delivery. Route: inline (S5 chunker unit RED→GREEN first).
-  - T1a `sentence_chunker.py` + `tests/test_live_sentence_chunker.py` (FR-05). Commit.
-  - T1b `llm.py` streaming round + provider `create_stream` (sync + owned-async) + `tests/test_live_llm_stream.py`. Commit.
-  - T1c `speech.py` `StreamingSentenceSpeechProducer` + `server.py` conversation path + `/call/context` flag + timings + `tests/test_live_streaming.py`. Commit.
-- [ ] T2 S3, S4: Cancel semantics, tool loop and gate preservation (covered by tests in T1b/T1c: cancel mid-synthesis, gate round + closer hablado, disconnect, replay approve legacy). No separate code unit.
+- [x] T1 S1, S2: LLM token streaming + sentence-chunked protocol-2 delivery. Route: inline (S5 chunker unit RED→GREEN first).
+  - [x] T1a `sentence_chunker.py` + `tests/test_live_sentence_chunker.py` (FR-05). Commit: chunker unit 21/21.
+  - [x] T1b `llm.py` streaming round + provider `create_stream` (sync + owned-async) + `tests/test_live_llm_stream.py`. Commit: 9/9, 145 legacy green.
+  - [x] T1c `speech.py` `StreamingSentenceSpeechProducer` + `server.py` conversation path + `/call/context` flag + timings + `tests/test_live_streaming.py` (9/9, ×5 stable). Differential batch 333/333 (incl. `/call/context` shape pin updated for `streaming_ask`).
+- [x] T2 S3, S4: Cancel semantics, tool loop and gate preservation — covered: cancel mid-synthesis (`test_cancel_mid_stream_aborts_pending_synthesis`), gate round + closer hablado (`test_gate_turn_speaks_the_closer_and_keeps_the_gate`), disconnect (`test_disconnect_mid_stream_kills_the_job_and_persists_nothing`), legacy replay untouched (suite green).
 - [ ] T3 S5: Client wiring (app.js speculative start + dedupe + timing stash, C2 digest re-pin) + browser AC1 test + `call_stream.py` turn_timing fields + `test_call_stream.py` timing test. Commit.
 - [ ] T4 S1-S5: Full suite runs (unit/API, node --test, browser, e2e M2/M4 sanity) + report done to lead (lead dispatches C5 verification).
 
 ## Log
 - L1: Hito **W3-P1 (Streaming LLM+TTS en llamada en vivo)** de Ola 3. Rama `feat/w3-p1-live-streaming` en worktree `../agent-tts-worktrees/w3-p1-live-streaming`.
 - L2 (2026-11-25): Kickoff fleet — task end-to-end en el tab (investigate, implement, verify). Specs S1-S5 + contratos C1-C5 según brief del lead. Design decisions D1-D10 registradas arriba (resuelven open questions del PRD dentro del scope autorizado).
+- L3 (2026-11-26): Lead confirma continuar (1: fix tail de test_live_streaming.py — reescrito el test roto; 2: producer + server según diseño — hecho). T1c evidence: 9/9 integración estable ×5; lote diferencial 333/333; único pin contractual actualizado: `/call/context` añade `streaming_ask: true` (aditivo). Learned: worker del producer marca cancelled al observar el cancel_event incluso sin más oraciones en cola (cubre fallos de turno no-TurnCancelled); el test de disconnect debe joinear el thread del producer antes de afirmar fase.
