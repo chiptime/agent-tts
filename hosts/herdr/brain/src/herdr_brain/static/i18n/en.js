@@ -168,9 +168,26 @@
     "tabs.screen": "Screen",
     "tabs.history": "History",
     "tabs.terminal": "Terminal",
+    "tabs.files": "Files",
     "tabs.fullscreen": "Full screen",
     "tabs.exit_fullscreen": "✕ Exit",
     "tabs.exit_fullscreen_title": "Exit full screen (Esc)",
+
+    /* ---- workspace files (W3-P2) ---- */
+    "files.refresh": "↻ Refresh",
+    "files.changes": "⎇ Changes",
+    "files.tree_aria": "Workspace files",
+    "files.diff_files_aria": "Changed files",
+    "files.empty": "No files to show",
+    "files.loading": "Loading the workspace…",
+    "files.error": "The workspace is not available right now",
+    "files.binary": "binary file: content not served",
+    "files.truncated": "truncated preview (64 KB)",
+    "files.truncated_tree": "tree truncated (too many files)",
+    "files.not_git": "This workspace is not a git repository",
+    "files.no_diff": "No uncommitted changes in tracked files",
+    "files.diff_title": "Uncommitted changes",
+    "files.close": "Close",
 
     /* ---- glance ---- */
     "glance.empty": "No agent conversation yet",

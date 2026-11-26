@@ -149,8 +149,10 @@
   var tabAgent = $("tab-agent");
   var tabTerminal = $("tab-terminal");
   var tabScreen = tabTerminal;
+  var tabFiles = $("tab-files");
   var agentPanel = $("agent-panel");
   var terminalPanel = $("terminal-panel");
+  var filesPanel = $("files-panel");
   var screenPanel = terminalPanel;
   var tabHistory = $("tab-agent");
   var historyPanel = $("agent-panel");
@@ -4416,6 +4418,7 @@
   var AGENT_TABS = [
     { id: "agent", tab: tabAgent, panel: agentPanel },
     { id: "terminal", tab: tabTerminal, panel: terminalPanel },
+    { id: "files", tab: tabFiles, panel: filesPanel },
   ];
   var currentAgentTabId = "agent";
 
@@ -4442,10 +4445,15 @@
   function selectAgentTab(name) {
     applyAgentTab(name);
     localStorage.setItem(TAB_KEY, currentAgentTabId);
-    /* Reading views load on entry: an immediate mirror read for terminal. */
+    /* Reading views load on entry: an immediate mirror read for terminal,
+     * an immediate workspace tree for files (W3-P2) — both ONLY on entry,
+     * so boot-time traffic stays unchanged. */
     if (currentAgentTabId === "terminal") {
       firstMirrorPaint = true;
       refreshMirror();
+    }
+    if (currentAgentTabId === "files") {
+      refreshWorkspaceFiles();
     }
   }
 
@@ -4462,9 +4470,203 @@
 
   tabAgent.addEventListener("click", function () { selectAgentTab("agent"); });
   if (tabTerminal) tabTerminal.addEventListener("click", function () { selectAgentTab("terminal"); });
+  if (tabFiles) tabFiles.addEventListener("click", function () { selectAgentTab("files"); });
   tabAgent.addEventListener("keydown", function (event) { agentTabKeydown(event, 0); });
   if (tabTerminal) tabTerminal.addEventListener("keydown", function (event) { agentTabKeydown(event, 1); });
+  if (tabFiles) tabFiles.addEventListener("keydown", function (event) { agentTabKeydown(event, 2); });
   applyAgentTab(agentTabById(localStorage.getItem(TAB_KEY)) ? localStorage.getItem(TAB_KEY) : "agent");
+
+  /* ---------------- workspace files (W3-P2, doc 13 §1) --------------- *
+   * The «Ficheros» tab: read-only explorer over the pane's cwd served
+   * by /workspace/* — bounded tree, capped file preview, per-file git
+   * diff. Everything fetches ON DEMAND (tab entry, refresh or the
+   * Cambios button) so boot-time traffic stays unchanged. Painting is
+   * createElement/textContent only: server paths and diff bodies are
+   * DATA, never markup. The pure model lives in files.js; this wiring
+   * owns readFetch and the DOM. */
+
+  var filesTree = $("files-tree");
+  var filesEmpty = $("files-empty");
+  var filesStatus = $("files-status");
+  var filesCwd = $("files-cwd");
+  var filesRefreshBtn = $("files-refresh");
+  var filesChangesBtn = $("files-changes");
+  var filesViewer = $("files-viewer");
+  var filesViewerPath = $("files-viewer-path");
+  var filesViewerMeta = $("files-viewer-meta");
+  var filesViewerClose = $("files-viewer-close");
+  var filesViewerContent = $("files-viewer-content");
+  var filesDiff = $("files-diff");
+  var filesDiffSummary = $("files-diff-summary");
+  var filesDiffClose = $("files-diff-close");
+  var filesDiffFiles = $("files-diff-files");
+  var filesDiffContent = $("files-diff-content");
+
+  var filesFetchSeq = 0;  // stale-response guard: only the newest load paints
+
+  function workspaceFilesQuery(extra) {
+    var pairs = [];
+    var paneId = replyKeys.getAttribute("data-pane") || "";
+    if (paneId) pairs.push("pane_id=" + encodeURIComponent(paneId));
+    if (extra) {
+      for (var key in extra) {
+        if (extra[key]) pairs.push(key + "=" + encodeURIComponent(extra[key]));
+      }
+    }
+    return pairs.length ? "?" + pairs.join("&") : "";
+  }
+
+  function setFilesStatus(message) {
+    if (message) {
+      filesStatus.textContent = message;
+      filesStatus.classList.remove("hidden");
+    } else {
+      filesStatus.textContent = "";
+      filesStatus.classList.add("hidden");
+    }
+  }
+
+  function fetchWorkspaceJson(url, paint) {
+    var seq = ++filesFetchSeq;
+    readFetch(url).then(function (resp) {
+      if (!resp.ok) maybeOfferPairing(resp);
+      return resp.json().catch(function () { return null; });
+    }).then(function (body) {
+      if (seq !== filesFetchSeq) return;  // a newer load superseded this one
+      paint(body);
+    }).catch(function () {
+      if (seq === filesFetchSeq) paint(null);
+    });
+  }
+
+  function refreshWorkspaceFiles() {
+    setFilesStatus(t("files.loading"));
+    filesEmpty.classList.add("hidden");
+    filesViewer.classList.add("hidden");
+    filesDiff.classList.add("hidden");
+    fetchWorkspaceJson("/workspace/tree" + workspaceFilesQuery(), paintWorkspaceTree);
+  }
+
+  function paintWorkspaceTree(payload) {
+    filesTree.textContent = "";
+    if (!payload || !payload.available) {
+      filesCwd.textContent = "";
+      setFilesStatus((payload && payload.error) || t("files.error"));
+      filesEmpty.classList.remove("hidden");
+      return;
+    }
+    filesCwd.textContent = payload.cwd || "";
+    setFilesStatus(payload.truncated ? t("files.truncated_tree") : "");
+    var rows = window.FilesExplorer.treeRows(payload.entries);
+    if (!rows.length) {
+      filesEmpty.classList.remove("hidden");
+      return;
+    }
+    for (var i = 0; i < rows.length; i++) paintTreeRow(rows[i]);
+  }
+
+  function paintTreeRow(row) {
+    /* Directories are structure (the server walk already descends them);
+     * only files open a preview. Padding indents by path depth. */
+    var item = document.createElement(row.type === "dir" ? "div" : "button");
+    item.className = "files-row" + (row.type === "dir" ? " is-dir" : "");
+    if (row.type === "file") {
+      item.type = "button";
+      item.addEventListener("click", function () { openWorkspaceFile(row.path); });
+    }
+    var icon = document.createElement("span");
+    icon.className = "files-row-icon";
+    icon.textContent = row.type === "dir" ? "▸" : "·";
+    var name = document.createElement("span");
+    name.className = "files-row-name";
+    name.textContent = row.name;
+    var meta = document.createElement("span");
+    meta.className = "files-row-meta";
+    meta.textContent = [row.size, row.mtime].filter(Boolean).join(" · ");
+    item.appendChild(icon);
+    item.appendChild(name);
+    item.appendChild(meta);
+    item.style.paddingLeft = (6 + row.depth * 14) + "px";
+    filesTree.appendChild(item);
+  }
+
+  function openWorkspaceFile(path) {
+    setFilesStatus(t("files.loading"));
+    fetchWorkspaceJson(
+      "/workspace/file" + workspaceFilesQuery({ path: path }),
+      function (body) { paintFileViewer(path, body); }
+    );
+  }
+
+  function paintFileViewer(path, body) {
+    if (!body || !body.available) {
+      setFilesStatus((body && body.error) || t("files.error"));
+      return;
+    }
+    setFilesStatus("");
+    filesDiff.classList.add("hidden");
+    filesViewerPath.textContent = body.path || path;
+    var bits = [];
+    if (body.binary) bits.push(t("files.binary"));
+    if (body.truncated) bits.push(t("files.truncated"));
+    if (typeof body.size === "number") bits.push(window.FilesExplorer.formatSize(body.size));
+    filesViewerMeta.textContent = bits.join(" · ");
+    filesViewerContent.textContent = body.binary ? "" : (body.content || "");
+    filesViewer.classList.remove("hidden");
+  }
+
+  function openWorkspaceChanges() {
+    setFilesStatus(t("files.loading"));
+    fetchWorkspaceJson("/workspace/changes" + workspaceFilesQuery(), paintWorkspaceDiff);
+  }
+
+  function paintWorkspaceDiff(body) {
+    filesDiffFiles.textContent = "";
+    filesDiffContent.textContent = "";
+    if (!body || !body.available) {
+      setFilesStatus((body && body.error) || t("files.error"));
+      return;
+    }
+    if (!body.is_git_repo) {
+      setFilesStatus(t("files.not_git"));
+      return;
+    }
+    setFilesStatus(body.truncated ? t("files.truncated") : "");
+    filesDiffSummary.textContent = window.FilesExplorer.statusSummary(body.entries);
+    var chunks = window.FilesExplorer.diffFiles(body.diff);
+    if (!chunks.length) {
+      filesDiffContent.textContent = t("files.no_diff");
+    } else {
+      for (var i = 0; i < chunks.length; i++) paintDiffChip(chunks[i], i === 0);
+    }
+    filesViewer.classList.add("hidden");
+    filesDiff.classList.remove("hidden");
+  }
+
+  function paintDiffChip(chunk, selected) {
+    var chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "files-diff-chip" + (selected ? " active" : "");
+    chip.textContent = chunk.file;
+    chip.setAttribute("role", "option");
+    chip.addEventListener("click", function () {
+      var chips = filesDiffFiles.children;
+      for (var i = 0; i < chips.length; i++) chips[i].classList.remove("active");
+      chip.classList.add("active");
+      filesDiffContent.textContent = chunk.body;
+    });
+    filesDiffFiles.appendChild(chip);
+    if (selected) filesDiffContent.textContent = chunk.body;
+  }
+
+  filesRefreshBtn.addEventListener("click", refreshWorkspaceFiles);
+  filesChangesBtn.addEventListener("click", openWorkspaceChanges);
+  filesViewerClose.addEventListener("click", function () {
+    filesViewer.classList.add("hidden");
+  });
+  filesDiffClose.addEventListener("click", function () {
+    filesDiff.classList.add("hidden");
+  });
 
   function toggleHistoryFind(force) {
     if (!historyFindBar) return;

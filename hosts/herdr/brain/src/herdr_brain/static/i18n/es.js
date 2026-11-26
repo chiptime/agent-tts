@@ -168,9 +168,26 @@
     "tabs.screen": "Pantalla",
     "tabs.history": "Historial",
     "tabs.terminal": "Terminal",
+    "tabs.files": "Ficheros",
     "tabs.fullscreen": "Pantalla completa",
     "tabs.exit_fullscreen": "✕ Salir",
     "tabs.exit_fullscreen_title": "Salir de pantalla completa (Esc)",
+
+    /* ---- workspace files (W3-P2) ---- */
+    "files.refresh": "↻ Actualizar",
+    "files.changes": "⎇ Cambios",
+    "files.tree_aria": "Ficheros del workspace",
+    "files.diff_files_aria": "Ficheros cambiados",
+    "files.empty": "Sin ficheros que mostrar",
+    "files.loading": "Cargando el workspace…",
+    "files.error": "El workspace no está disponible ahora mismo",
+    "files.binary": "fichero binario: contenido no servido",
+    "files.truncated": "vista truncada (64 KB)",
+    "files.truncated_tree": "árbol truncado (demasiados ficheros)",
+    "files.not_git": "Este workspace no es un repositorio git",
+    "files.no_diff": "Sin cambios sin confirmar en ficheros con seguimiento",
+    "files.diff_title": "Cambios sin confirmar",
+    "files.close": "Cerrar",
 
     /* ---- glance ---- */
     "glance.empty": "Sin conversación del agente todavía",

@@ -2004,6 +2004,13 @@ def create_app(
             headers=dict(_NO_CACHE_HEADERS),
         )
 
+    @app.get("/files.js", include_in_schema=False)
+    def files_js() -> FileResponse:
+        return FileResponse(
+            STATIC_DIR / "files.js", media_type="text/javascript",
+            headers=dict(_NO_CACHE_HEADERS),
+        )
+
     @app.get("/mermaid.min.js", include_in_schema=False)
     def mermaid_min_js() -> FileResponse:
         return FileResponse(
