@@ -190,3 +190,13 @@ test("highlightLine highlights keywords, strings, comments and numbers", () => {
   assert.match(js, /class="tok-str">&#39;hi&#39;</);
   assert.match(js, /class="tok-cmt">\/\/ note</);
 });
+
+test("highlightLine distinguishes JSON keys from values", () => {
+  const json = Files.highlightLine('  "name": "agent-tts", "version": 1, "ok": true', "json");
+  assert.match(json, /class="tok-key">&quot;name&quot;<\/span>:/);
+  assert.match(json, /class="tok-str">&quot;agent-tts&quot;<\/span>/);
+  assert.match(json, /class="tok-key">&quot;version&quot;<\/span>:/);
+  assert.match(json, /class="tok-num">1<\/span>/);
+  assert.match(json, /class="tok-key">&quot;ok&quot;<\/span>:/);
+  assert.match(json, /class="tok-val">true<\/span>/);
+});

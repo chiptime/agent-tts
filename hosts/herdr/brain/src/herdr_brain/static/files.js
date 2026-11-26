@@ -262,13 +262,17 @@
       ? "(#.*$)"
       : (lang === "sql" ? "(--.*$)" : "(\\/\\/.*$)");
 
+    var keyPattern = (lang === "yaml")
+      ? "(\"[^\"\\\\]*(?:\\\\.[^\"\\\\]*)*\"|'[^'\\\\]*(?:\\\\.[^'\\\\]*)*'|[a-zA-Z0-9_$-]+)(?=\\s*:)"
+      : "(\"[^\"\\\\]*(?:\\\\.[^\"\\\\]*)*\"|'[^'\\\\]*(?:\\\\.[^'\\\\]*)*')(?=\\s*:)";
+
     var stringPattern = "(\"[^\"\\\\]*(?:\\\\.[^\"\\\\]*)*\"|'[^'\\\\]*(?:\\\\.[^'\\\\]*)*'|`[^`\\\\]*(?:\\\\.[^`\\\\]*)*`)";
     var kwdPattern = "\\b(def|class|function|return|if|elif|else|for|while|import|from|as|in|is|not|and|or|try|except|finally|with|raise|yield|async|await|const|let|var|export|default|switch|case|break|continue|new|typeof|interface|type|enum)\\b";
     var valPattern = "\\b(True|False|None|true|false|null|undefined|self|this)\\b";
     var numPattern = "\\b(\\d+(?:\\.\\d+)?)\\b";
     var fnPattern = "\\b([a-zA-Z_]\\w*)(?=\\s*\\()";
 
-    var tokenRe = new RegExp([commentPattern, stringPattern, kwdPattern, valPattern, numPattern, fnPattern].join("|"), "g");
+    var tokenRe = new RegExp([commentPattern, keyPattern, stringPattern, kwdPattern, valPattern, numPattern, fnPattern].join("|"), "g");
 
     var lastIndex = 0;
     var html = "";
@@ -282,14 +286,16 @@
       if (match[1]) {
         html += '<span class="tok-cmt">' + escapeHtml(tok) + '</span>';
       } else if (match[2]) {
-        html += '<span class="tok-str">' + escapeHtml(tok) + '</span>';
+        html += '<span class="tok-key">' + escapeHtml(tok) + '</span>';
       } else if (match[3]) {
-        html += '<span class="tok-kwd">' + escapeHtml(tok) + '</span>';
+        html += '<span class="tok-str">' + escapeHtml(tok) + '</span>';
       } else if (match[4]) {
-        html += '<span class="tok-val">' + escapeHtml(tok) + '</span>';
+        html += '<span class="tok-kwd">' + escapeHtml(tok) + '</span>';
       } else if (match[5]) {
-        html += '<span class="tok-num">' + escapeHtml(tok) + '</span>';
+        html += '<span class="tok-val">' + escapeHtml(tok) + '</span>';
       } else if (match[6]) {
+        html += '<span class="tok-num">' + escapeHtml(tok) + '</span>';
+      } else if (match[7]) {
         html += '<span class="tok-fn">' + escapeHtml(tok) + '</span>';
       } else {
         html += escapeHtml(tok);

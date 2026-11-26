@@ -115,7 +115,7 @@ EXPECTED_DIGESTS = {
     # files.js script tag (app.js), the files.* + tabs.files keys (both
     # i18n). files.js rides the same change but is served generically,
     # not pinned.
-    "/": "de8577094d52add25b942476575ecc558f6cb641dec41f89094adda5302ff827",
+    "/": "b82a7f39de458579873943c14eb3f885e6294388a453aff4dc7d2272e3d0b207",
     # send-track.js re-pinned for the correction batch (f7g): the
     # per-receipt seq guard (a lower seq is a stale delivery, ignored),
     # a start for an already-known receipt never regresses it, and a
