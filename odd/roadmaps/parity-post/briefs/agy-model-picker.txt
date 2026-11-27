@@ -1,0 +1,40 @@
+
+      ▄▀▀▄        Antigravity CLI 1.5.18
+     ▀▀▀▀▀▀       user@example.com (Google AI Pro)
+    ▀▀▀▀▀▀▀▀      Gemini 4 Neon (Medium)
+   ▄▀▀    ▀▀▄     /tmp/opencode
+  ▄▀▀      ▀▀▄
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+>
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+Switch Model
+
+  Search:
+          ────────────────────
+
+> Gemini 4 Neon         (current)
+  Gemini 4 Carbon
+  Gemini 4 Argon
+  Gemini 4 Hydrogen
+  Orchestrator
+  Gemini 3.8 Flash
+  Claude Opus 5.5
+  Claude Sonnet 5.5
+  GPT-OSS 120B (Medium)
+
+  Effort  ◂      ●━━━━━━━━━━◉──────────○──────────○      ▸
+                low      medium      high       xhigh
+            Balanced speed and reasoning quality for most tasks
+
+Keyboard: ↑/↓ Navigate  ←/→ Effort  enter Select  esc Go Back
+
+🤖 Gemini 4 Neon (Medium) | 📁 /tmp/opencode | 📊 Tokens: 0 (0%) | ⚡ Quotas: [ Gemini: 11% ↻ 58m (sem: 66%) | 3P: 100%
+
+
+
+
+
+
+
+
