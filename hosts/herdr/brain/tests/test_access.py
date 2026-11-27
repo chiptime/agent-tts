@@ -59,3 +59,23 @@ def test_call_stream_guard_passes_for_valid_handshake():
         pairing=None,
     )
     assert refusal is None
+
+
+def test_theme_routes_follow_the_write_matrix():
+    """POST-04: importing/deleting a theme file mutates the brain's
+    config dir — writes behind the device gate and the audit log. The
+    catalog reads stay reads and never become device-exempt."""
+    assert access.classify("POST", "/themes/import") == "write"
+    assert access.classify("DELETE", "/themes/mi-tema") == "write"
+    assert access.classify("DELETE", "/themes/alto-contraste-sol") == "write"
+    assert access.classify("GET", "/themes") == "read"
+    assert access.classify("GET", "/themes/claro") == "read"
+    for method, path in (
+        ("GET", "/themes"),
+        ("GET", "/themes/claro"),
+        ("POST", "/themes/import"),
+        ("DELETE", "/themes/mi-tema"),
+    ):
+        assert access.is_device_exempt(method, path) is False
+    # the import route is POST-only: a GET must not inherit the write
+    assert access.classify("GET", "/themes/import") == "read"

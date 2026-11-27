@@ -268,6 +268,12 @@ _WRITE_RULES = (
     ("POST", re.compile(r"^/sdk/v1/approval/[^/]+/action$")),
     ("POST", re.compile(r"^/transcribe$")),
     ("POST", re.compile(r"^/reset$")),
+    # POST-04 themes: importing or deleting a theme file under the
+    # brain's config dir mutates operator state — writes behind the
+    # device gate and the audit log. GET /themes* stays a read (catalog
+    # plus documents the operator authored themselves).
+    ("POST", re.compile(r"^/themes/import$")),
+    ("DELETE", re.compile(r"^/themes/[^/]+$")),
     ("GET", re.compile(r"^/call/stream$")),
     ("WEBSOCKET", re.compile(r"^/call/stream$")),
 )

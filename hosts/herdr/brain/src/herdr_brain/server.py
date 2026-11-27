@@ -142,6 +142,7 @@ from .tts import (
     tts_backend_status,
 )
 from .loadmon import LoadMonitor
+from .themes import BUILTIN_IDS, MAX_FILE_BYTES, ThemeStore, ThemeValidationError
 from .tts_daemon import DAEMON_UP, DaemonWatcher, daemon_status
 from .walky import (
     MessageNotFound as MsgNotFound,
@@ -1405,6 +1406,7 @@ def create_app(
     operator_config: Optional[OperatorConfig] = None,
     crew: Optional[CrewGateway] = None,
     loadmon: Optional[LoadMonitor] = None,
+    themes: Optional[ThemeStore] = None,
 ) -> FastAPI:
     """Builds the FastAPI app with injectable backends for tests.
 
@@ -1935,6 +1937,11 @@ def create_app(
         # create_app; the lifespan shutdown stops it (router-level API:
         # FastAPI removed add_event_handler)
         app.router.on_shutdown.append(loadmon.stop)
+    # POST-04 themes: the store resolves the config dir lazily (no disk
+    # touch at boot); an injected store is how tests stay hermetic.
+    if themes is None:
+        themes = ThemeStore()
+    app.state.themes = themes
     app.state.transcriber = transcriber
     app.state.live_transcriber = live_transcriber
     app.state.approval_store = approval_store
@@ -2502,6 +2509,97 @@ def create_app(
             "fetched_at": snap.get("fetched_at"),
             "providers": masked,
         }
+
+    # -- Importable themes (POST-04 fase A, doc 13 §5) -----------------------
+    # Backend contract only: catalog, export, import and delete. Applying a
+    # theme in the PWA is fase B (static/, deliberately untouched here).
+    # POST/DELETE are classified write in access.py (device gate + audit);
+    # the reads stay device-gated reads, never exempt.
+
+    @app.get("/themes")
+    def themes_catalog() -> dict:
+        """Importable theme catalog (read-only): built-in presets first,
+        then validated user themes; corrupt files are skipped with a
+        reason instead of breaking the surface."""
+        return app.state.themes.list_catalog()
+
+    @app.get("/themes/{theme_id}")
+    def theme_detail(theme_id: str) -> dict:
+        """One theme document with its tokens — the export shape fase B
+        consumes. Unknown or invalid ids are an honest 404."""
+        doc = app.state.themes.get_theme(theme_id)
+        if doc is None:
+            raise HTTPException(
+                status_code=404, detail=f"tema no encontrado: {theme_id}"
+            )
+        return doc
+
+    @app.post("/themes/import")
+    async def themes_import(request: Request) -> dict:
+        """Import one theme (write, audited): schema v1 + WCAG matrix
+        validated before anything is stored. The size cap bounds MEMORY,
+        not just the parsed object: a numeric Content-Length over the
+        cap is refused before reading, and the stream accumulates with
+        an early 413 abort — a spoofed or chunked body never lands whole.
+        A failing theme answers 422 with the pair and measured ratio and
+        writes no byte."""
+        declared = request.headers.get("content-length", "")
+        try:
+            if int(declared) > MAX_FILE_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"el tema supera {MAX_FILE_BYTES} bytes",
+                )
+        except ValueError:
+            pass  # absent or non-numeric: the stream cap decides below
+        buffer = bytearray()
+        async for chunk in request.stream():
+            buffer.extend(chunk)
+            if len(buffer) > MAX_FILE_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"el tema supera {MAX_FILE_BYTES} bytes",
+                )
+        try:
+            doc = json.loads(bytes(buffer))
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422, detail=f"JSON inválido: {exc}"
+            ) from exc
+        try:
+            stored = app.state.themes.import_theme(doc)
+        except ThemeValidationError as exc:
+            raise HTTPException(status_code=422, detail=exc.reason) from exc
+        audit_log.record(
+            {
+                "action": "themes.import",
+                "device": audit_device(request),
+                "detail": {"id": stored["id"]},
+            }
+        )
+        return {**stored, "built_in": False}
+
+    @app.delete("/themes/{theme_id}")
+    def themes_delete(request: Request, theme_id: str) -> dict:
+        """Delete one USER theme (write, audited). Built-in presets are
+        code, not files: deleting one is a 422, not a silent no-op."""
+        if theme_id in BUILTIN_IDS:
+            raise HTTPException(
+                status_code=422,
+                detail=f"{theme_id} es un preset integrado: no se puede borrar",
+            )
+        if not app.state.themes.delete_theme(theme_id):
+            raise HTTPException(
+                status_code=404, detail=f"tema no encontrado: {theme_id}"
+            )
+        audit_log.record(
+            {
+                "action": "themes.delete",
+                "device": audit_device(request),
+                "detail": {"id": theme_id},
+            }
+        )
+        return {"ok": True}
 
     @app.get("/herd")
     def herd() -> object:
