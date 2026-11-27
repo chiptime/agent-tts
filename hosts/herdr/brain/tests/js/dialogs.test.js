@@ -532,6 +532,14 @@ test("modelSwitchOffer: only harnesses with a verified picker command", () => {
   assert.deepEqual(Dialogs.modelSwitchOffer("opencode2"), {
     command: "/models", label: "Cambiar modelo",
   });
+  // agy 1.5.18, live-verified 2026-11-26 (POST-09): /model opens the
+  // Switch Model picker; both pane spellings route.
+  assert.deepEqual(Dialogs.modelSwitchOffer("antigravity"), {
+    command: "/model", label: "Cambiar modelo",
+  });
+  assert.deepEqual(Dialogs.modelSwitchOffer("agy"), {
+    command: "/model", label: "Cambiar modelo",
+  });
   assert.equal(Dialogs.modelSwitchOffer("codex"), null);
   assert.equal(Dialogs.modelSwitchOffer(""), null);
   assert.equal(Dialogs.modelSwitchOffer(null), null);
@@ -658,6 +666,10 @@ test("wantsModelCatalog: only an opencode model picker asks for the catalog", ()
   assert.equal(Dialogs.wantsModelCatalog(OPENCODE_PICKER), true);
   assert.equal(
     Dialogs.wantsModelCatalog({ ...OPENCODE_PICKER, agent: "opencode2" }), true);
+  // POST-09: the agy card asks for the catalog too (the structured
+  // payload's agent is the recognizer's canonical "antigravity").
+  assert.equal(
+    Dialogs.wantsModelCatalog({ ...OPENCODE_PICKER, agent: "antigravity" }), true);
   assert.equal(Dialogs.wantsModelCatalog({ ...OPENCODE_PICKER, agent: "claude" }), false);
   assert.equal(Dialogs.wantsModelCatalog(STRUCTURED), false);
   assert.equal(Dialogs.wantsModelCatalog({ ...OPENCODE_PICKER, unread: true }), false);

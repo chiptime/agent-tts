@@ -176,8 +176,10 @@ EXPECTED_DIGESTS = {
     # "Cambiar modelo" affordance reaches those panes too. Re-pinned
     # again for the modal poll (F7d fix): createModelSwitchPoller +
     # modalViewUrl here, the /view?modal=1 watch and the held picker
-    # card in app.js.
-    "/dialogs.js": "c7c0b15e783d9c2cb10dcd5fcc07eb3029536303a4bb4158f9e93ce111e3fb26",
+    # card in app.js. Re-pinned for POST-09 (agy 1.5.18, live-verified
+    # 2026-11-26): antigravity/agy join MODEL_SWITCH_COMMANDS (/model)
+    # and antigravity joins CATALOG_HARNESSES.
+    "/dialogs.js": "2390a1a928101ee909d6a16e39fd9c0976c61a459422093fd7c588ffa830e6d9",
     "/herd-group.js": "de284c825e3c99aef07db2dd53198484ec8b7ceba94dd97dbbae0303560df399",
     "/toast.js": "cbccb72b22530ff8f83250bebd8d498ca20977db9536aa094aa759bb9632357e",
     "/reader.js": "b99edccdba5adb1c407ebc3064f7045214c0152677a1da2cfa2c388393792989",

@@ -28,9 +28,12 @@ What each source actually records (verified against real local artifacts,
   ``info.last_token_usage.cached_input_tokens``. The same response can be
   re-reported with an identical snapshot, so consecutive identical snapshots
   are deduplicated into one request.
-* antigravity / aider — their transcripts carry no per-request token usage,
-  so the report says so explicitly instead of guessing ("not measurable for
-  <agent>").
+* antigravity — ``~/.gemini/antigravity-cli/brain/<session>/.system_generated/
+  logs/transcript.jsonl``: every ``PLANNER_RESPONSE`` event carries
+  ``created_at`` plus ``input_tokens``/``cache_read_tokens``/``output_tokens``
+  (verified against real local artifacts, 2026-11-26). One event is one
+  request; agy records no cache-write counter, so ``cache_write_tokens``
+  stays 0. Events without token numbers (older shapes) are not requests.
 
 Where the MODEL of each request lives (verified against real local
 artifacts, 2026-11-17, for ``agent-tts last-model`` — HT-19 L8/S4a):
@@ -45,8 +48,14 @@ artifacts, 2026-11-17, for ``agent-tts last-model`` — HT-19 L8/S4a):
   ``"gpt-5.5"``); ``token_count`` events carry none, so the model in effect
   for each request is the one from the latest ``turn_context`` at that point
   in the stream.
-* antigravity / aider — no model identity in their transcripts: the command
-  errors honestly instead of guessing.
+* antigravity — ``PLANNER_RESPONSE`` events carry ``model`` (e.g.
+  ``"gemini-4-neon-high"``) on requests recorded by recent agy builds
+  (first seen in real transcripts 2026-11-17). Older requests carry usage
+  but no model, and a session whose LAST request has none answers
+  ``no model recorded`` honestly — never guessed from the global
+  ``settings.json`` default (POST-09/D5).
+* aider — no model identity in its chat history: the command errors
+  honestly instead of guessing.
 """
 
 import argparse
@@ -352,16 +361,87 @@ def probe_codex(session_id: str, sessions_root: str) -> ProbeResult:
 
 
 def probe_antigravity(session_id: str, root: str) -> ProbeResult:
-    """Antigravity transcripts carry no token usage: declared not measurable."""
-    result = ProbeResult(
-        agent="antigravity", session_id=session_id, status=STATUS_NOT_MEASURABLE,
-        reason="transcript carries no token usage data",
-    )
+    """Measures requests from an Antigravity CLI session transcript.
+
+    Every ``PLANNER_RESPONSE`` event carrying the per-request token
+    counts (``input_tokens``/``cache_read_tokens``/``output_tokens``)
+    and a parseable ``created_at`` is one request; ``model`` rides on
+    the events recent agy builds record. Events without token numbers
+    are not requests — a transcript full of them stays honestly not
+    measurable instead of inventing counters. A session id is a
+    DIRECTORY name: anything that could resolve outside the root
+    (traversal, separators, dot segments) is rejected unread.
+    """
+    result = ProbeResult(agent="antigravity", session_id=session_id, status=STATUS_MISSING)
+    if (
+        not session_id
+        or session_id in (".", "..")
+        or "/" in session_id
+        or "\\" in session_id
+        or os.path.basename(session_id) != session_id
+    ):
+        return result
     path = os.path.join(root, session_id, ".system_generated", "logs", "transcript.jsonl")
-    if os.path.isfile(path):
+    try:
+        if not Path(path).resolve().is_relative_to(Path(root).resolve()):
+            return result
+        if not os.path.isfile(path):
+            return result
         result.source_path = path
+        fh = open(path, "r", encoding="utf-8", errors="replace")
+    except OSError:
+        return result
+
+    turns: List[TurnUsage] = []
+    saw_planner = False
+    with fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if not isinstance(event, dict) or event.get("type") != "PLANNER_RESPONSE":
+                continue
+            saw_planner = True
+            ts = _parse_iso_ts(event.get("created_at"))
+            input_tokens = event.get("input_tokens")
+            cached_tokens = event.get("cache_read_tokens")
+            if (
+                ts is None
+                or not isinstance(input_tokens, int)
+                or isinstance(input_tokens, bool)
+                or input_tokens < 0
+            ):
+                continue
+            turns.append(
+                TurnUsage(
+                    timestamp=ts,
+                    input_tokens=input_tokens,
+                    # A negative counter is corrupt, not a cache hit.
+                    cached_tokens=(
+                        cached_tokens
+                        if isinstance(cached_tokens, int)
+                        and not isinstance(cached_tokens, bool)
+                        and cached_tokens >= 0
+                        else 0
+                    ),
+                    # agy records no cache-write counter: 0, never a guess.
+                    cache_write_tokens=0,
+                    model=_clean_model(event.get("model")),
+                )
+            )
+
+    if turns:
+        result.status = STATUS_OK
+        result.turns = turns
+    elif saw_planner:
+        result.status = STATUS_NOT_MEASURABLE
+        result.reason = "planner responses carry no token usage data"
     else:
-        result.status = STATUS_MISSING
+        result.status = STATUS_NO_REQUESTS
     return result
 
 

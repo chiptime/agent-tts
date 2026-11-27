@@ -52,7 +52,12 @@ from .herdr import (
 )
 from .mux import create_mux
 from .mux.refusal import MuxRefusal
-from .pane_model import OpencodeModelCatalog, PaneModelResolver
+from .pane_model import (
+    AntigravityModelCatalog,
+    OpencodeModelCatalog,
+    PaneModelResolver,
+    antigravity_picker_rows,
+)
 from .quotas import QuotaService, format_reset
 from .send_receipts import (
     STOP_ENDED_STATUSES,
@@ -138,12 +143,21 @@ MODEL_COMMANDS = {
     "omp": "/switch",
     "opencode": "/models",
     "opencode2": "/models",
+    # POST-09, live-verified 2026-11-26 on agy 1.5.18: /model opens the
+    # Switch Model picker the detector reads (walk-class, never a
+    # digit; the ←/→ Effort gauge stays out of scope).
+    "antigravity": "/model",
+    "agy": "/model",
 }
 #: The pickers answered SEARCH-FIRST: the name is typed into their own
 #: Search box, the pointer is read from the screen's paint, walked and
 #: verified before Enter (``_search_first_picker_answer``). Every other
 #: model_picker keeps the plain arrow walk.
 OPENCODE_SEARCH_PICKERS = frozenset({"opencode", "opencode2"})
+#: POST-09: the antigravity harness names a pane may report (the dialog
+#: registry folds `agy` into the same recognizer; the engine layer maps
+#: both onto `antigravity`).
+AGY_HARNESSES = frozenset({"antigravity", "agy"})
 #: How long switch_model waits for the picker (and, after the commit,
 #: for the "Switch model?" confirmation) to appear.
 SWITCH_WAIT_ATTEMPTS = 20
@@ -294,11 +308,15 @@ def _match_picker_option(options, wanted: str):
 
 
 def _name_candidates(wanted: str, labels) -> str:
-    """The refusal detail for a name that matched nothing or several."""
-    if not labels:
-        return f"{wanted}: no option of this picker names it"
-    shown = ", ".join(labels[:6]) + ("…" if len(labels) > 6 else "")
-    return f"{wanted} is ambiguous between: {shown}"
+    """The refusal detail for a name that matched nothing or several.
+
+    Both the request and the screen's labels are free-form text that
+    reaches the PWA/LLM: masked (C1) before they ride the detail."""
+    masked = [mask_text(label) for label in labels]
+    if not masked:
+        return f"{mask_text(wanted)}: no option of this picker names it"
+    shown = ", ".join(masked[:6]) + ("…" if len(labels) > 6 else "")
+    return f"{mask_text(wanted)} is ambiguous between: {shown}"
 
 
 def _runs_plain_text(runs: list) -> str:
@@ -402,6 +420,7 @@ class BrainTools:
         consult: Optional[ConsultService] = None,
         pane_model: Optional[PaneModelResolver] = None,
         model_catalog: Optional[OpencodeModelCatalog] = None,
+        agy_model_catalog: Optional[AntigravityModelCatalog] = None,
         quota_service: Optional[QuotaService] = None,
     ):
         self._settings = settings
@@ -411,6 +430,9 @@ class BrainTools:
         # Every connected opencode model (GET /pane/models): lazy — the
         # CLI only runs when a card asks.
         self._model_catalog = model_catalog or OpencodeModelCatalog()
+        # Every connected agy model (POST-09): the same lazy discipline;
+        # it also names the antigravity chip's model (D4) from cache.
+        self._agy_model_catalog = agy_model_catalog or AntigravityModelCatalog()
         # Provider quota snapshots (POST-02): cached reads of the host's
         # external ai-quotas CLI — never blocking, never persisted.
         self._quota_service = quota_service or QuotaService()
@@ -615,13 +637,27 @@ class BrainTools:
         )
 
     def _model_of(self, agent: Optional[AgentInfo]) -> Optional[str]:
-        """The pane's last-request model, or None (never raises)."""
+        """The pane's last-request model, or None (never raises).
+
+        POST-09/D4: an antigravity pane's chip carries the model's
+        HUMAN name from the `agy models` catalog (``Gemini 4 Neon
+        (High)``), falling back to the raw transcript id; every other
+        harness keeps today's raw id."""
         if agent is None or agent.session_kind != "id":
             return None
         try:
-            return self._pane_model.model(agent.agent, agent.session_value)
+            model = self._pane_model.model(agent.agent, agent.session_value)
         except Exception:  # noqa: BLE001 — display metadata never breaks a poll
             return None
+        if not model or (agent.agent or "").strip().lower() not in AGY_HARNESSES:
+            return model
+        try:
+            # POST-09 R2: stale-while-revalidate — hot polls NEVER wait
+            # on the CLI; a cold catalog answers the raw id and the
+            # human label lands once the background refresh does.
+            return self._agy_model_catalog.cached_name_for(model) or model
+        except Exception:  # noqa: BLE001 — display metadata never breaks a poll
+            return model
 
     def _context_of(self, agent: Optional[AgentInfo]) -> Optional[dict]:
         """The pane's context window (parity F7d S1), or None (never
@@ -1266,31 +1302,42 @@ class BrainTools:
                 answer_lines,
             )
         if model_name is not None:
-            if not (
-                model.kind == "model_picker"
-                and (target.agent or "").strip().lower() in OPENCODE_SEARCH_PICKERS
-            ):
+            harness = (target.agent or "").strip().lower()
+            if model.kind == "model_picker" and harness in OPENCODE_SEARCH_PICKERS:
+                matched, failure = self._search_first_picker_answer(
+                    pane_id,
+                    target.agent,
+                    model_name,
+                    model_name=model_name,
+                    provider_name=provider_name,
+                )
+                if failure is not None:
+                    return refused(*failure)
+                return self._with_variant_next(pane_id, target.agent, {
+                    "outcome": "answered",
+                    "pane_id": pane_id,
+                    "option": None,
+                    "model_name": model_name,
+                    "keys": ["enter"],
+                    "label": matched,
+                })
+            if model.kind == "model_picker" and harness in AGY_HARNESSES:
+                # POST-09: the agy catalog card answers by NAME, but the
+                # agy pointer is a real glyph (not ANSI paint), so the
+                # name resolves against the FRESH picker's own family
+                # rows and the guarded walk below commits it — never
+                # Search typing (unverified for agy), never a digit.
+                index, reason, names = _match_picker_option(
+                    model.options, model_name
+                )
+                if index is None:
+                    return refused(reason, _name_candidates(model_name, names))
+                option = index
+            else:
                 return refused(
                     "invalid_target",
-                    "a model name answers only an opencode model picker",
+                    "a model name answers only a model picker",
                 )
-            matched, failure = self._search_first_picker_answer(
-                pane_id,
-                target.agent,
-                model_name,
-                model_name=model_name,
-                provider_name=provider_name,
-            )
-            if failure is not None:
-                return refused(*failure)
-            return self._with_variant_next(pane_id, target.agent, {
-                "outcome": "answered",
-                "pane_id": pane_id,
-                "option": None,
-                "model_name": model_name,
-                "keys": ["enter"],
-                "label": matched,
-            })
         if option is None or not 0 <= option < len(model.options):
             return refused("invalid_target", "that option is not on this dialog")
 
@@ -2153,11 +2200,16 @@ class BrainTools:
                 answer.get("detail") or answer.get("reason") or "the picker moved",
             )
 
-        # Claude's cached-conversation confirmation: only a Yes row that
-        # names the SAME model is confirmed — anything else stops the
-        # switch with nothing further sent.
-        confirm = self._wait_for_dialog(
-            pane_id, harness, ("model_picker",), question_prefix="Switch model?"
+        # Claude raises the cached-conversation "Switch model?" confirmation
+        # (verified on Claude only): every other harness commits on
+        # Enter, so don't burn the bounded wait on a dialog it never
+        # shows (POST-09 R2 — agy switches report immediately).
+        confirm = (
+            self._wait_for_dialog(
+                pane_id, harness, ("model_picker",), question_prefix="Switch model?"
+            )
+            if harness == "claude"
+            else None
         )
         if confirm is not None:
             yes_index, label = _switch_confirmation_yes(confirm.options)
@@ -3179,21 +3231,57 @@ class BrainTools:
         return None
 
     def pane_models(self, pane_id: str) -> Optional[dict]:
-        """The FULL connected-model catalog for one opencode pane.
+        """The FULL connected-model catalog for one pane's card.
 
         Read-only and PWA-only (never an LLM tool). ``None`` for an
         unknown pane (never the focused fallback); any other harness
-        answers ``unsupported`` without running anything. Each entry
-        carries ``current`` — true only for the model the pane's last
-        request used, when that is known.
+        answers ``unsupported`` without running anything. opencode
+        entries carry ``current`` for the model the pane's last request
+        used; antigravity entries (POST-09) are the rows agy's own
+        picker paints, each with its family ``ids`` and ``current`` on
+        the row whose family contains the transcript id.
         """
         info = self.pane_info(pane_id)
         if info is None:
             return None
         harness = (info.get("agent") or "").strip().lower()
-        if harness not in OPENCODE_SEARCH_PICKERS:
-            return {"models": [], "reason": "unsupported"}
-        listing = self._model_catalog.list_models()
+        if harness in OPENCODE_SEARCH_PICKERS:
+            listing = self._model_catalog.list_models()
+            current = None
+            session_id = info.get("session_id")
+            if session_id:
+                try:
+                    current = self._pane_model.model(info.get("agent"), session_id)
+                except Exception:  # noqa: BLE001 — display metadata never breaks the card
+                    current = None
+            entries = listing["models"]
+            flags = [bool(current) and entry["id"] == current for entry in entries]
+            if current and "/" not in current and not any(flags):
+                # A bare id names no provider: mark it only when ONE entry
+                # carries it — a guess between providers would be wrong.
+                bare = [
+                    index
+                    for index, entry in enumerate(entries)
+                    if entry["id"].split("/", 1)[-1] == current
+                ]
+                if len(bare) == 1:
+                    flags[bare[0]] = True
+            models = [
+                {**entry, "current": flag} for entry, flag in zip(entries, flags)
+            ]
+            return {"models": models, "reason": listing["reason"]}
+        if harness in AGY_HARNESSES:
+            return self._agy_pane_models(info)
+        return {"models": [], "reason": "unsupported"}
+
+    def _agy_pane_models(self, info: dict) -> dict:
+        """The antigravity card: the picker's own rows from `agy models`.
+
+        The transcript id names an exact entry (``gemini-4-neon-high``);
+        the picker paints FAMILIES, so the current mark rides the row
+        whose family ``ids`` contain it — membership, never a guess
+        between lookalike names."""
+        listing = self._agy_model_catalog.list_models()
         current = None
         session_id = info.get("session_id")
         if session_id:
@@ -3201,20 +3289,9 @@ class BrainTools:
                 current = self._pane_model.model(info.get("agent"), session_id)
             except Exception:  # noqa: BLE001 — display metadata never breaks the card
                 current = None
-        entries = listing["models"]
-        flags = [bool(current) and entry["id"] == current for entry in entries]
-        if current and "/" not in current and not any(flags):
-            # A bare id names no provider: mark it only when ONE entry
-            # carries it — a guess between providers would be wrong.
-            bare = [
-                index
-                for index, entry in enumerate(entries)
-                if entry["id"].split("/", 1)[-1] == current
-            ]
-            if len(bare) == 1:
-                flags[bare[0]] = True
         models = [
-            {**entry, "current": flag} for entry, flag in zip(entries, flags)
+            {**row, "current": bool(current) and current in row["ids"]}
+            for row in antigravity_picker_rows(listing["models"])
         ]
         return {"models": models, "reason": listing["reason"]}
 

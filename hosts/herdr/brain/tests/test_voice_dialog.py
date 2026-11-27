@@ -1141,6 +1141,17 @@ IDLE_OPENCODE = AgentInfo(
     focused=False,
 )
 
+IDLE_AGY = AgentInfo(
+    pane_id="w4:p3",
+    agent="agy",
+    status="idle",
+    session_kind="id",
+    session_value="sid-4",
+    cwd="/repo",
+    title="agy",
+    focused=False,
+)
+
 
 def switch_picker_screen(pointer: int) -> str:
     """The pinned /model list with the pointer on ``pointer``."""
@@ -1347,6 +1358,72 @@ class OpencodeModelsStub(SwitchModelStub):
         return "\n".join([title, blank, query_row, blank, *rows, blank, footer])
 
 
+class AntigravitySwitchStub(SwitchModelStub):
+    """The agy /model picker (POST-09, LIVE capture 2026-11-26): the
+    command opens the Switch Model panel; arrows move the column-0
+    pointer; Enter commits the family row and the panel closes (no
+    confirmation stage). The (current) mark stays on Gemini 4 Neon
+    while the pointer moves."""
+
+    _FIXTURE = (
+        Path(__file__).parent / "fixtures" / "dialogs" / "agy-model-picker.txt"
+    ).read_text(encoding="utf-8")
+    # The family rows, derived FROM the fixture: the contiguous block
+    # between the Search underline rule and the Effort slider, glyph
+    # stripped (the (current) suffix rides on row 0's body verbatim).
+    _ROWS = tuple(
+        line[2:] if line.startswith("> ") else line.strip()
+        for line in _FIXTURE.splitlines()[
+            next(
+                i
+                for i, line in enumerate(_FIXTURE.splitlines())
+                if line.strip() and set(line.strip()) == {"─"}
+            )
+            + 1 : next(
+                i
+                for i, line in enumerate(_FIXTURE.splitlines())
+                if line.strip().startswith("Effort")
+            )
+        ]
+        if line.strip()
+    )
+
+    def __init__(self, agents):
+        super().__init__(agents)
+        self.agy_pointer = 0
+
+    def read_screen(self, pane_id, n_lines=None, source="visible", as_ansi=False):
+        if self.stage == "list":
+            return self._agy_screen()
+        if self.stage == "done":
+            return "$ agy\n❯ _"
+        return super().read_screen(pane_id, n_lines, source, as_ansi)
+
+    def _agy_screen(self):
+        out = []
+        for line in self._FIXTURE.splitlines():
+            stripped = line.strip()
+            body = stripped[2:] if stripped.startswith("> ") else stripped
+            if body in self._ROWS:
+                line = (
+                    "> " if self._ROWS.index(body) == self.agy_pointer else "  "
+                ) + body
+            out.append(line)
+        return "\n".join(out)
+
+    def send_keys(self, pane_id, keys):
+        self.key_calls.append({"pane_id": pane_id, "keys": list(keys)})
+        for key in keys:
+            if self.stage == "list":
+                if key == "down":
+                    self.agy_pointer = min(len(self._ROWS) - 1, self.agy_pointer + 1)
+                elif key == "up":
+                    self.agy_pointer = max(0, self.agy_pointer - 1)
+                elif key == "enter":
+                    self.stage = "done"
+        return {"ok": True, "error": ""}
+
+
 class NotingPaneModel:
     """PaneModelResolver double that records note_switched calls."""
 
@@ -1400,6 +1477,60 @@ class TestSwitchModel:
         keys = [key for call in stub.key_calls for key in call["keys"]]
         assert keys == ["down", "enter"]
         assert all(key not in "0123456789" for key in keys)
+
+    def test_the_agy_picker_walks_the_family_rows_and_never_a_digit(self):
+        """POST-09: the agy /model picker is walk-class like every
+        other picker — the pointer is a real glyph, the rows are
+        unnumbered, Enter commits the family row."""
+        stub = AntigravitySwitchStub([IDLE_AGY])
+        noted = NotingPaneModel()
+        tools = self._tools(stub, pane_model=noted)
+
+        result = tools.switch_model(IDLE_AGY.pane_id, "Gemini 4 Carbon")
+
+        assert result["outcome"] == "switched"
+        assert result["model"] == "Gemini 4 Carbon"
+        assert [call["text"] for call in stub.prompt_calls] == ["/model"]
+        keys = [key for call in stub.key_calls for key in call["keys"]]
+        assert keys == ["down", "enter"]
+        assert all(key not in "0123456789" for key in keys)
+        # The pane's model cache was invalidated for the next /view.
+        assert noted.noted == [("agy", "sid-4")]
+
+    def test_the_agy_pointed_row_commits_without_walking(self):
+        stub = AntigravitySwitchStub([IDLE_AGY])
+        tools = self._tools(stub)
+
+        result = tools.switch_model(IDLE_AGY.pane_id, "Gemini 4 Neon")
+
+        assert result["outcome"] == "switched"
+        assert [key for call in stub.key_calls for key in call["keys"]] == ["enter"]
+
+    def test_an_agy_name_the_picker_never_paints_refuses(self):
+        """The catalog's effort-suffixed names (`Gemini 4 Neon (High)`)
+        name no FAMILY row: the switch refuses with nothing pressed —
+        the effort level is out of scope for this unit (POST-09/D2)."""
+        stub = AntigravitySwitchStub([IDLE_AGY])
+        tools = self._tools(stub)
+
+        result = tools.switch_model(IDLE_AGY.pane_id, "Gemini 4 Neon (High)")
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "no-match"
+        assert stub.key_calls == []
+
+    def test_refusal_details_are_masked(self):
+        """C1 (POST-09 R2): a picker refusal's detail carries free-form
+        names toward the PWA/LLM — secret-shaped text is masked."""
+        from herdr_brain.tools import _name_candidates
+
+        detail = _name_candidates(
+            "ghp_AbCdEf1234567890123456789012345678",
+            ["GLM-5.3", "ghp_FedCbA9876543210987654321098765432"],
+        )
+        assert "ghp_AbCdEf1234567890" not in detail
+        assert "ghp_FedCbA9876543210" not in detail
+        assert detail.count("[masked]") == 2
 
     def test_an_ambiguous_name_refuses_and_presses_nothing(self):
         stub = OmpSwitchStub([IDLE_OMP])

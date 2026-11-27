@@ -345,6 +345,52 @@ def test_codex_dedupes_repeated_token_counts(tmp_path):
     assert "TTL between 202.0s and 404.0s" in out
 
 
+# ─── Antigravity transcript fixtures (POST-09) ────────────────
+#
+# Real `transcript.jsonl` shape (verified live 2026-11-26): every
+# PLANNER_RESPONSE carries `created_at` + the per-request token counts
+# (`input_tokens`, `cache_read_tokens`, `output_tokens`); `model` rides
+# only on requests recorded by recent agy builds (first seen 2026-11-17).
+
+
+def _antigravity_request(created, input_tokens, cached, output, model=None):
+    event = {
+        "step_index": "7", "source": "MODEL", "type": "PLANNER_RESPONSE",
+        "status": "DONE", "created_at": created,
+        "input_tokens": input_tokens, "cache_read_tokens": cached,
+        "output_tokens": output, "content": "hecho",
+    }
+    if model is not None:
+        event["model"] = model
+    return event
+
+
+def antigravity_usage_fixture(tmp_path):
+    """Three requests: miss, hit, hit — with the model field on the
+    requests a current agy build records."""
+    root = tmp_path / "brain"
+    _write_jsonl(
+        root / ANTIGRAVITY_SESSION / ".system_generated" / "logs" / "transcript.jsonl",
+        [
+            {"step_index": "1", "source": "MODEL", "type": "PLANNER_RESPONSE",
+             "status": "DONE", "created_at": "2026-11-10T10:00:00.000Z",
+             "content": "respuesta pre-model-field"},
+            _antigravity_request(
+                "2026-11-26T00:55:00Z", 2102, 0, 1151, model="gemini-4-hydrogen-medium"
+            ),
+            _antigravity_request(
+                "2026-11-26T00:55:26Z", 2102, 275778, 1151,
+                model="gemini-4-hydrogen-medium",
+            ),
+            _antigravity_request(
+                "2026-11-26T00:55:55Z", 29658, 314493, 5260,
+                model="gemini-4-hydrogen-high",
+            ),
+        ],
+    )
+    return root
+
+
 # ─── Honest degradation: agents without cache data ───────────
 
 
@@ -362,6 +408,122 @@ def test_antigravity_is_not_measurable(tmp_path):
     )
     assert rc == 0, err
     assert "not measurable for antigravity" in out
+
+
+def test_antigravity_measures_requests_gaps_and_hits(tmp_path):
+    root = antigravity_usage_fixture(tmp_path)
+    rc, out, err = run_report(
+        ["--agent", "antigravity", "--session-id", ANTIGRAVITY_SESSION],
+        antigravity_root=str(root),
+    )
+    assert rc == 0, err
+    assert f"cache report: antigravity session {ANTIGRAVITY_SESSION}" in out
+    # The pre-model-field PLANNER_RESPONSE carries no usage: not a request.
+    assert "requests: 3  hits: 2 (66.7%)" in out
+    assert "gap=26.0s" in out
+    assert "gap=29.0s" in out
+    assert "cached=275778" in out
+    assert "cached=314493" in out
+
+
+def test_antigravity_json_reports_the_measured_turns(tmp_path):
+    root = antigravity_usage_fixture(tmp_path)
+    rc, out, err = run_report(
+        ["--agent", "antigravity", "--session-id", ANTIGRAVITY_SESSION,
+         "--json", "--limit", "1"],
+        antigravity_root=str(root),
+    )
+    assert rc == 0, err
+    payload = json.loads(out)
+    assert payload["measurable"] is True
+    assert payload["source_path"].endswith("transcript.jsonl")
+    assert [turn["input_tokens"] for turn in payload["turns"]] == [29658]
+    assert [turn["cached_tokens"] for turn in payload["turns"]] == [314493]
+    assert payload["turns"][0]["cache_write_tokens"] == 0
+    assert payload["summary"]["requests"] == 3
+
+
+def test_antigravity_rejects_a_path_traversal_session(tmp_path):
+    """A session id is a directory name under the root: traversal,
+    separators and dot segments never resolve (POST-09 R2)."""
+    inside = tmp_path / "brain" / "victim" / ".system_generated" / "logs"
+    outside = tmp_path / "outside"
+    inside.mkdir(parents=True)
+    outside.mkdir(parents=True)
+    for target in (inside, outside):
+        (target / "transcript.jsonl").write_text(
+            json.dumps({
+                "type": "PLANNER_RESPONSE", "created_at": "2026-11-26T00:00:00Z",
+                "input_tokens": 1, "cache_read_tokens": 0, "output_tokens": 0,
+                "model": "gemini-4-neon-high",
+            }) + "\n",
+            encoding="utf-8",
+        )
+    for bad in ("../outside", "..", ".", "a/b", "a\\b"):
+        rc, out, err = run_report(
+            ["--agent", "antigravity", "--session-id", bad],
+            antigravity_root=str(tmp_path / "brain"),
+        )
+        assert rc != 0, bad
+        assert "no transcript found" in err, bad
+
+
+def test_antigravity_probe_rejects_unsafe_session_ids(tmp_path):
+    """Probe level (POST-09 R2): an empty id and every path-shaped id
+    are MISSING without touching the filesystem."""
+    from agent_tts.cache_probe import STATUS_MISSING, probe_antigravity
+
+    for bad in ("", "..", ".", "a/b", "a\\b", "../outside", "x/.."):
+        result = probe_antigravity(bad, str(tmp_path))
+        assert result.status == STATUS_MISSING, bad
+        assert result.source_path is None, bad
+
+
+def test_antigravity_skips_negative_token_events(tmp_path):
+    """A negative counter is corrupt, not a request: the turn is
+    skipped, never summed."""
+    root = tmp_path / "brain"
+    _write_jsonl(
+        root / ANTIGRAVITY_SESSION / ".system_generated" / "logs" / "transcript.jsonl",
+        [
+            _antigravity_request("2026-11-26T00:55:00Z", -5, 100, 10),
+            _antigravity_request("2026-11-26T00:56:00Z", 200, -3, 10,
+                                 model="gemini-4-neon-high"),
+            _antigravity_request("2026-11-26T00:57:00Z", 300, 50, 10,
+                                 model="gemini-4-neon-high"),
+        ],
+    )
+    rc, out, err = run_report(
+        ["--agent", "antigravity", "--session-id", ANTIGRAVITY_SESSION],
+        antigravity_root=str(root),
+    )
+    assert rc == 0, err
+    # The -5 input and the -3 cached never counted.
+    assert "requests: 2" in out
+    assert "in=200  cached=0" in out
+    assert "in=300  cached=50" in out
+
+
+def test_antigravity_survives_invalid_utf8_bytes(tmp_path):
+    """Transcripts are read as lenient UTF-8: a bad byte replaces, the
+    valid lines still measure (no UnicodeDecodeError escape)."""
+    root = tmp_path / "brain"
+    path = root / ANTIGRAVITY_SESSION / ".system_generated" / "logs" / "transcript.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    good = json.dumps({
+        "type": "PLANNER_RESPONSE", "created_at": "2026-11-26T00:55:00Z",
+        "input_tokens": 100, "cache_read_tokens": 10, "output_tokens": 5,
+        "model": "gemini-4-neon-high",
+    })
+    path.write_bytes(
+        b"\xff\xfe broken line \x00\n" + good.encode("utf-8") + b"\n\n\xff\n"
+    )
+    rc, out, err = run_report(
+        ["--agent", "antigravity", "--session-id", ANTIGRAVITY_SESSION],
+        antigravity_root=str(root),
+    )
+    assert rc == 0, err
+    assert "requests: 1" in out
 
 
 def test_aider_is_not_measurable(tmp_path):

@@ -22,6 +22,21 @@ CLAUDE_OTHER = "aaaaaaaa-1111-2222-3333-444444444444"
 OPENCODE_SESSION = "ses_abc123"
 OPENCODE_OTHER = "ses_other99"
 CODEX_SESSION = "01a018c2-1e32-71b3-82d1-cfc4f5f07dd3"
+ANTIGRAVITY_SESSION = "c738bf00-0e3f-4031-9568-9220d6fb4192"
+
+
+def _antigravity_request(created, input_tokens, cached, output, model=None):
+    """One real-shaped PLANNER_RESPONSE (POST-09): per-request token
+    counts always, `model` only on requests recorded 2026-11-17+."""
+    event = {
+        "step_index": "7", "source": "MODEL", "type": "PLANNER_RESPONSE",
+        "status": "DONE", "created_at": created,
+        "input_tokens": input_tokens, "cache_read_tokens": cached,
+        "output_tokens": output, "content": "hecho",
+    }
+    if model is not None:
+        event["model"] = model
+    return event
 
 
 def run_last_model(argv, **kwargs):
@@ -342,18 +357,94 @@ def test_missing_transcript_errors(tmp_path):
 def test_antigravity_has_no_model(tmp_path):
     root = tmp_path / "brain"
     _write_jsonl(
-        root / "c738bf00-0e3f-4031-9568-9220d6fb4192" / ".system_generated" / "logs"
-        / "transcript.jsonl",
+        root / ANTIGRAVITY_SESSION / ".system_generated" / "logs" / "transcript.jsonl",
         [{"step_index": "1", "source": "MODEL", "type": "PLANNER_RESPONSE",
           "status": "DONE", "created_at": "2026-11-10T10:00:00.000Z",
           "content": "respuesta sin modelo"}],
     )
     rc, out, err = run_last_model(
-        ["--agent", "antigravity", "--session-id", "c738bf00-0e3f-4031-9568-9220d6fb4192"],
+        ["--agent", "antigravity", "--session-id", ANTIGRAVITY_SESSION],
         antigravity_root=str(root),
     )
     assert rc == 1
     assert "no model recorded" in err
+
+
+def test_antigravity_reads_the_last_request_model(tmp_path):
+    """The transcript's model field (agy ~1.5.x): the LAST request's
+    model is the answer, mid-session switch included."""
+    root = tmp_path / "brain"
+    _write_jsonl(
+        root / ANTIGRAVITY_SESSION / ".system_generated" / "logs" / "transcript.jsonl",
+        [
+            # Pre-2026-11-17 event shape: usage, no model field.
+            _antigravity_request("2026-11-10T10:00:00Z", 100, 0, 10),
+            _antigravity_request(
+                "2026-11-26T00:55:00Z", 2102, 0, 1151, model="gemini-4-hydrogen-medium"
+            ),
+            _antigravity_request(
+                "2026-11-26T00:55:55Z", 29658, 314493, 5260,
+                model="gemini-4-hydrogen-high",
+            ),
+        ],
+    )
+    rc, out, err = run_last_model(
+        ["--agent", "antigravity", "--session-id", ANTIGRAVITY_SESSION],
+        antigravity_root=str(root),
+    )
+    assert rc == 0, err
+    assert out == "gemini-4-hydrogen-high\n"
+
+
+def test_antigravity_session_without_model_field_errors_honestly(tmp_path):
+    """D5: sessions whose requests predate the `model` field answer
+    `no model recorded` — never guessed from the global settings.json."""
+    root = tmp_path / "brain"
+    _write_jsonl(
+        root / ANTIGRAVITY_SESSION / ".system_generated" / "logs" / "transcript.jsonl",
+        [
+            _antigravity_request("2026-11-10T10:00:00Z", 100, 0, 10),
+            _antigravity_request("2026-11-10T10:01:00Z", 200, 50, 20),
+        ],
+    )
+    rc, out, err = run_last_model(
+        ["--agent", "antigravity", "--session-id", ANTIGRAVITY_SESSION],
+        antigravity_root=str(root),
+    )
+    assert rc == 1
+    assert out == ""
+    assert "no model recorded" in err
+
+
+def test_antigravity_last_request_without_model_errors(tmp_path):
+    """A mid-session switch BACK to an old-style client (or a truncated
+    transcript): the last request carries no model, so there is nothing
+    honest to report."""
+    root = tmp_path / "brain"
+    _write_jsonl(
+        root / ANTIGRAVITY_SESSION / ".system_generated" / "logs" / "transcript.jsonl",
+        [
+            _antigravity_request(
+                "2026-11-26T00:55:00Z", 2102, 0, 1151, model="gemini-4-neon-high"
+            ),
+            _antigravity_request("2026-11-26T00:56:00Z", 2102, 3000, 1151),
+        ],
+    )
+    rc, out, err = run_last_model(
+        ["--agent", "antigravity", "--session-id", ANTIGRAVITY_SESSION],
+        antigravity_root=str(root),
+    )
+    assert rc == 1
+    assert "no model recorded" in err
+
+
+def test_antigravity_missing_transcript_errors(tmp_path):
+    rc, out, err = run_last_model(
+        ["--agent", "antigravity", "--session-id", ANTIGRAVITY_SESSION],
+        antigravity_root=str(tmp_path / "empty"),
+    )
+    assert rc == 1
+    assert "no transcript found" in err
 
 
 def test_sniffs_opencode_from_ses_session(tmp_path):

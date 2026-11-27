@@ -78,6 +78,39 @@ BLOCKED_OPENCODE = AgentInfo(
     focused=True,
 )
 
+IDLE_AGY = AgentInfo(
+    pane_id="w1:p3",
+    agent="agy",
+    status="idle",
+    session_kind="id",
+    session_value="00000000-1111-2222-3333-444444444444",
+    cwd="/repo",
+    title="agy",
+    focused=True,
+)
+
+# POST-09: the REAL agy /model picker (live capture 2026-11-26).
+AGY_PICKER = (FIXTURES / "agy-model-picker.txt").read_text(encoding="utf-8")
+# The family rows, derived FROM the fixture: the contiguous block
+# between the Search underline rule and the Effort slider, glyph
+# stripped (the (current) suffix rides on row 0's body verbatim).
+AGY_ROWS = tuple(
+    line[2:] if line.startswith("> ") else line.strip()
+    for line in AGY_PICKER.splitlines()[
+        next(
+            i
+            for i, line in enumerate(AGY_PICKER.splitlines())
+            if line.strip() and set(line.strip()) == {"─"}
+        )
+        + 1 : next(
+            i
+            for i, line in enumerate(AGY_PICKER.splitlines())
+            if line.strip().startswith("Effort")
+        )
+    ]
+    if line.strip()
+)
+
 
 class DialogTapStub:
     """HerdrClient double: one blocked pane whose styled read IS a
@@ -102,6 +135,43 @@ class DialogTapStub:
     def send_keys(self, pane_id, keys):
         self.key_calls.append({"pane_id": pane_id, "keys": list(keys)})
         return {"ok": True, "error": ""}
+
+
+class AntigravityPickerStub(DialogTapStub):
+    """One agy pane whose styled read is the REAL /model picker; the
+    column-0 pointer moves with the arrows and Enter closes the panel
+    (no confirmation stage)."""
+
+    def __init__(self):
+        super().__init__([IDLE_AGY], AGY_PICKER)
+        self.state = {"stage": "picker", "pointer": 0}
+
+    def read_screen(self, pane_id, n_lines=None, source="visible", as_ansi=False):
+        if self.state["stage"] == "done":
+            return "$ agy\n❯ _"
+        out = []
+        for line in AGY_PICKER.splitlines():
+            stripped = line.strip()
+            body = stripped[2:] if stripped.startswith("> ") else stripped
+            if body in AGY_ROWS:
+                line = (
+                    "> " if AGY_ROWS.index(body) == self.state["pointer"] else "  "
+                ) + body
+            out.append(line)
+        return "\n".join(out)
+
+    def send_keys(self, pane_id, keys):
+        result = super().send_keys(pane_id, keys)
+        for key in keys:
+            if key == "down":
+                self.state["pointer"] = min(
+                    len(AGY_ROWS) - 1, self.state["pointer"] + 1
+                )
+            elif key == "up":
+                self.state["pointer"] = max(0, self.state["pointer"] - 1)
+            elif key == "enter":
+                self.state["stage"] = "done"
+        return result
 
 
 @pytest.fixture
@@ -1253,6 +1323,82 @@ class TestModelPickerAnswerByModelName:
         assert result["outcome"] == "refused"
         assert result["reason"] == "changed"
         assert stub.text_calls == [] and stub.key_calls == []
+
+
+class TestAntigravityPickerAnswerByModelName:
+    """POST-09: the agy catalog card answers by NAME too — but the agy
+    pointer is a real glyph (not ANSI paint), so the name resolves
+    against the FRESH picker's own family rows and the guarded WALK
+    commits it. No Search typing (unverified for agy), never a digit."""
+
+    @staticmethod
+    def _model():
+        return recognize("agy", AGY_PICKER)
+
+    @staticmethod
+    def _tools(settings, stub):
+        from herdr_brain.tools import BrainTools
+
+        return BrainTools(settings, herdr=stub, sleeper=lambda _s: None)
+
+    def test_a_catalog_name_walks_to_the_family_row_and_commits(self, settings):
+        stub = AntigravityPickerStub()
+        model = self._model()
+
+        result = self._tools(settings, stub).answer_structured_dialog(
+            "w1:p3", model.fingerprint, model_name="Gemini 4 Carbon"
+        )
+
+        assert result["outcome"] == "answered"
+        assert result["label"] == "Gemini 4 Carbon"
+        assert stub.key_calls == [
+            {"pane_id": "w1:p3", "keys": ["down"]},
+            {"pane_id": "w1:p3", "keys": ["enter"]},
+        ]
+
+    def test_the_pointed_family_row_commits_without_walking(self, settings):
+        stub = AntigravityPickerStub()
+        model = self._model()
+
+        result = self._tools(settings, stub).answer_structured_dialog(
+            "w1:p3", model.fingerprint, model_name="Gemini 4 Neon"
+        )
+
+        assert result["outcome"] == "answered"
+        assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["enter"]}]
+
+    def test_a_name_no_family_row_paints_refuses_and_presses_nothing(self, settings):
+        stub = AntigravityPickerStub()
+        model = self._model()
+
+        result = self._tools(settings, stub).answer_structured_dialog(
+            "w1:p3", model.fingerprint, model_name="Gemini 4 Neon (High)"
+        )
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "no-match"
+        assert stub.key_calls == []
+
+    def test_the_screen_rows_still_answer_by_index(self, settings):
+        """The pre-POST-09 tap path (option index) is unchanged."""
+        stub = AntigravityPickerStub()
+        model = self._model()
+        index = next(
+            i for i, option in enumerate(model.options)
+            if option.label == "Gemini 4 Argon"
+        )
+
+        result = self._tools(settings, stub).answer_structured_dialog(
+            "w1:p3", model.fingerprint, index
+        )
+
+        assert result["outcome"] == "answered"
+        assert result["label"] == "Gemini 4 Argon"
+        assert stub.key_calls == [
+            {"pane_id": "w1:p3", "keys": ["down"]},
+            {"pane_id": "w1:p3", "keys": ["down"]},
+            {"pane_id": "w1:p3", "keys": ["enter"]},
+        ]
 
 
 class TestPaneDialogAnswerModelNameRoute:

@@ -77,7 +77,18 @@ CORPUS = {
         "opencode-models-picker.txt",
         "opencode-models-picker-over-chat.txt",
     ),
-    "antigravity": ("antigravity-select.txt",),
+    "antigravity": (
+        "antigravity-select.txt",
+        # POST-09: the REAL /model picker (LIVE capture 2026-11-26, agy
+        # 1.5.18, scratch tmux pane — see fixtures/dialogs/provenance.md):
+        # `Switch Model` title, unnumbered family rows with the pointer
+        # in column 0, one `(current)` mark, the Effort slider, and the
+        # single Keyboard footer. The quota statusline below the footer
+        # rides along on purpose: it churns every read and must never
+        # claim, nor destabilize, the picker's identity.
+        "agy-model-picker.txt",
+        "agy-model-picker-moved.txt",
+    ),
     "kiro": ("kiro-approval.txt", "kiro-trust.txt"),
     # parity-f7e S2: the dangerous-command approval panel, derived from
     # the reference product's REAL captures (Hermes Agent v0.22.2 classic
@@ -874,6 +885,94 @@ class TestAntigravity:
         assert model.nav_keys == ("up", "down")
         assert model.commit_keys == ("enter",)
         assert model.selected == 0
+
+
+class TestAntigravityModelPicker:
+    """The REAL `/model` picker (LIVE capture 2026-11-26, agy 1.5.18;
+    fixtures/dialogs/provenance.md). Walk-class ALWAYS (ADR 0009): the
+    rows are unnumbered, so the recipe is arrows plus Enter, never a
+    digit; the `(current)` mark rides on its option only."""
+
+    def test_the_real_picker_reads_a_walk_recipe(self):
+        model = detect("antigravity", fixture("agy-model-picker.txt"))
+
+        assert model.kind == "model_picker"
+        assert model.question == "Switch Model"
+        assert labels(model) == [
+            "Gemini 4 Neon", "Gemini 4 Carbon", "Gemini 4 Argon",
+            "Gemini 4 Hydrogen", "Orchestrator", "Gemini 3.8 Flash",
+            "Claude Opus 5.5", "Claude Sonnet 5.5", "GPT-OSS 120B (Medium)",
+        ]
+        assert recipes(model) == [()] * 9
+        assert model.nav_keys == ("up", "down")
+        assert model.commit_keys == ("enter",)
+        assert model.selected == 0
+        assert [index for index, option in enumerate(model.options)
+                if option.current] == [0]
+        assert "Keyboard:" in model.hint
+        assert model.fingerprint
+
+    def test_the_pointer_move_changes_selected_and_fingerprint(self):
+        moved = detect("antigravity", fixture("agy-model-picker-moved.txt"))
+        base = detect("antigravity", fixture("agy-model-picker.txt"))
+
+        assert moved.selected == 1
+        assert moved.fingerprint != base.fingerprint
+        assert labels(moved) == labels(base)
+
+    def test_a_broken_footer_stays_unclaimed(self):
+        """Fail-closed: any footer word this agy build does not print is
+        another version's shape, never ours."""
+        for broken in (
+            "Keyboard: ↑/↓ Navigate  enter Select  esc Go Back",
+            "Keyboard: ↑/↓ Navigate  ←/→ Effort  enter Select  esc Cancel",
+            "↑/↓ Navigate  ←/→ Effort  enter Select  esc Go Back",
+        ):
+            screen = fixture("agy-model-picker.txt").replace(
+                "Keyboard: ↑/↓ Navigate  ←/→ Effort  enter Select  esc Go Back",
+                broken,
+            )
+            assert detect("antigravity", screen) is None, broken
+
+    def test_two_pointers_are_not_one_list(self):
+        screen = fixture("agy-model-picker.txt").replace(
+            "  Gemini 4 Carbon", "> Gemini 4 Carbon", 1
+        )
+        assert detect("antigravity", screen) is None
+
+    def test_a_picker_without_a_pointer_fails_closed(self):
+        """A frame without the column-0 `>` is not a live list: no
+        `selected` means no recipe, so the read claims NOTHING (the PWA
+        must not paint buttons whose walk could never be verified)."""
+        screen = "\n".join(
+            ("  " + line[2:]) if line.startswith("> ") else line
+            for line in fixture("agy-model-picker.txt").splitlines()
+        )
+        assert detect("antigravity", screen) is None
+
+    def test_a_picker_without_the_effort_row_fails_closed(self):
+        """The Effort slider is part of the pinned panel: an older
+        build's footer alone is not this picker."""
+        screen = "\n".join(
+            line
+            for line in fixture("agy-model-picker.txt").splitlines()
+            if not line.strip().startswith("Effort")
+        )
+        assert detect("antigravity", screen) is None
+
+    def test_the_effort_description_row_is_never_an_option(self):
+        """The slider's description text sits OUTSIDE the row block (it
+        paints below the Effort row) and must not become an option."""
+        model = detect("antigravity", fixture("agy-model-picker.txt"))
+
+        assert len(model.options) == 9
+        assert all(
+            "Balanced speed" not in option.label and "low" != option.label.lower()
+            for option in model.options
+        )
+
+    def test_the_aliased_agent_reads_the_same_picker(self):
+        assert detect("agy", fixture("agy-model-picker.txt")).kind == "model_picker"
 
 
 class TestKiro:

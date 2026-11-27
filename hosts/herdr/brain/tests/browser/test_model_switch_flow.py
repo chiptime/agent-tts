@@ -478,3 +478,131 @@ def test_a_refused_catalog_answer_says_the_dialog_changed(karaoke_app):
     page.locator("#dialog-buttons .dlg-model-search").fill("model 7")
     page.locator("#dialog-buttons .dlg-model-list button:visible").first.click()
     expect(page.locator("#dialog-status")).to_contain_text("cambió")
+
+
+# ── POST-09: the agy (antigravity) switch flow end to end ──────────────
+#
+# The pane's agent string is `agy`; the structured payload's agent is
+# the recognizer's canonical `antigravity`. /model opens the picker,
+# the catalog card replaces the painted rows, and a tap answers by
+# NAME through the guarded endpoint (the server resolves it against
+# the fresh picker's own family rows and walks — no Search typing).
+
+AGY_PANE = "w1:p6"
+
+AGY_HERD = [
+    {
+        "pane_id": AGY_PANE,
+        "agent": "agy",
+        "agent_status": "idle",
+        "title": "agy | repo",
+        "cwd": "/home/user/repo",
+        "session_id": "aaaaaaaa-1111-2222-3333-444444444444",
+        "focused": True,
+        "last_turn": None,
+        "model": "Gemini 4 Neon (High)",
+    }
+]
+
+AGY_IDLE_VIEW = {
+    "status": {"active": False, "pane_id": AGY_PANE, "agent": "agy",
+               "agent_status": "idle"},
+    "screen": None,
+    "screen_runs": None,
+    "transcript": None,
+    "pending": {"detected": False},
+}
+
+AGY_PICKER_STRUCTURED = {
+    "unread": False,
+    "agent": "antigravity",
+    "kind": "model_picker",
+    "question": "Switch Model",
+    "step": None,
+    "hint": "Keyboard: ↑/↓ Navigate  ←/→ Effort  enter Select  esc Go Back",
+    "fingerprint": "b2c3d4e5f6071829",
+    "recipe": "walk",
+    "options": [
+        {"label": "Gemini 4 Neon", "description": "", "checked": None,
+         "current": True},
+        {"label": "Gemini 4 Carbon", "description": "", "checked": None},
+        {"label": "GPT-OSS 120B (Medium)", "description": "", "checked": None},
+    ],
+}
+
+AGY_PICKER_VIEW = {**AGY_IDLE_VIEW, "structured": AGY_PICKER_STRUCTURED}
+
+AGY_CATALOG = [
+    {
+        "id": "gemini-4-neon-high", "name": "Gemini 4 Neon",
+        "ids": ["gemini-4-neon-high", "gemini-4-neon-low"], "current": True,
+    },
+    {
+        "id": "gemini-4-carbon-medium", "name": "Gemini 4 Carbon",
+        "ids": ["gemini-4-carbon-medium"], "current": False,
+    },
+    {
+        "id": "gpt-oss-120b-medium", "name": "GPT-OSS 120B (Medium)",
+        "ids": ["gpt-oss-120b-medium"], "current": False,
+    },
+]
+
+
+def test_the_agy_pane_opens_its_picker_and_a_catalog_tap_answers_by_name(
+    karaoke_app,
+):
+    harness = karaoke_app()
+    harness.respond("/herd", AGY_HERD)
+    harness.respond("/view", AGY_IDLE_VIEW, query=("pane_id",))
+    harness.respond("/pane/reply", {"ok": True}, method="POST")
+    harness.respond("/session/roots", {
+        "roots": [], "recents": [], "spaces": [], "harnesses": [],
+        "mux": {"name": "herdr", "children": ["herdr"]},
+    })
+    harness.respond(
+        "/pane/models", {"models": AGY_CATALOG, "reason": ""}, query=("pane_id",)
+    )
+    harness.respond(
+        "/pane/dialog/answer", {"ok": True, "option": None}, method="POST"
+    )
+    modal_reads = _modal_route(harness, AGY_PICKER_VIEW)
+    page = harness.load().page
+
+    # The affordance reaches an agy pane and sends agy's own command.
+    page.locator("#pane-picker").click()
+    expect(page.locator("#conv-model")).to_be_visible()
+    with page.expect_request(
+        lambda request: request.url.endswith("/pane/reply")
+        and request.method == "POST"
+    ) as delivered:
+        page.locator("#conv-model").click()
+    assert json.loads(delivered.value.post_data) == {
+        "pane_id": AGY_PANE, "text": "/model",
+    }
+
+    # The picker card paints, and the catalog REPLACES the painted
+    # rows (one read, for this pane).
+    expect(page.locator("#dialog-buttons .dlg-model-list button[data-catalog]")).to_have_count(
+        len(AGY_CATALOG)
+    )
+    assert len(modal_reads) == 1
+    reads = [r for r in harness.requests if "/pane/models" in r.url]
+    assert len(reads) == 1 and "pane_id=" in reads[0].url
+    current = page.locator("#dialog-buttons .dlg-model-list button.dlg-current")
+    expect(current).to_have_count(1)
+    expect(current).to_contain_text("Gemini 4 Neon")
+
+    # A tap answers by NAME (+ fingerprint), no provider, no index.
+    with page.expect_request(
+        lambda request: request.url.endswith("/pane/dialog/answer")
+        and request.method == "POST"
+    ) as captured:
+        page.locator(
+            "#dialog-buttons .dlg-model-list button[data-catalog]"
+        ).nth(1).click()
+    assert json.loads(captured.value.post_data) == {
+        "pane_id": AGY_PANE,
+        "fingerprint": AGY_PICKER_STRUCTURED["fingerprint"],
+        "model_name": "Gemini 4 Carbon",
+    }
+    expect(page.locator("#dialog-status")).to_contain_text("Respondido: Gemini 4 Carbon")

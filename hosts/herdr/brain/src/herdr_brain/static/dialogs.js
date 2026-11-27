@@ -675,7 +675,7 @@
    * a tap answers by NAME: the server types it into the real picker's
    * Search, walks the screen's pointer to that model and presses Enter
    * only once a fresh read shows the pointer on it. */
-  var CATALOG_HARNESSES = { opencode: true, opencode2: true };
+  var CATALOG_HARNESSES = { opencode: true, opencode2: true, antigravity: true };
 
   function wantsModelCatalog(structured) {
     return isModelPicker(structured) &&
@@ -760,6 +760,11 @@
     pi: "/switch",
     opencode: "/models",
     opencode2: "/models",
+    // POST-09 (agy 1.5.18, live-verified 2026-11-26): /model opens the
+    // Switch Model picker; the catalog card answers by NAME and the
+    // guarded walk commits it (the ←/→ Effort gauge stays out of scope).
+    antigravity: "/model",
+    agy: "/model",
   };
 
   function modelSwitchOffer(harness) {

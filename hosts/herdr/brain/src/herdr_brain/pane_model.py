@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set, Tuple
 
 from .stt_engine import EngineSttError, resolve_engine_python
+from .secrets_mask import mask_text
 
 #: Engine CLI contract (mirrored; brain must not import agent_tts).
 LAST_MODEL_MODULE = "agent_tts.cli"
@@ -596,3 +597,212 @@ class OpencodeModelCatalog:
                 }
             )
         return {"models": models, "reason": ""}
+
+
+# ── the antigravity (agy) connected-model catalog (POST-09) ───────────
+
+
+#: One ``id<TAB>Display Name`` line of ``agy models`` (real output,
+#: verified 2026-11-26 — e.g. ``gemini-4-neon-high<TAB>Gemini 4 Neon (High)``).
+_AGY_MODEL_LINE = re.compile(r"^([A-Za-z0-9][\w.\-]*)\t(\S.*)$")
+
+#: The trailing `` (Word)`` variant suffix of a display name — an effort
+#: level (``Gemini 4 Neon (High)``) or an orchestrator backend
+#: (``Orchestrator (Neon)``).
+_AGY_NAME_VARIANT = re.compile(r"^(.*?)\s+\(([^()]+)\)$")
+
+
+def _agy_binary() -> Optional[str]:
+    """The agy CLI: PATH first, then the per-user install the brain's
+    service PATH often lacks (same shape as ``_opencode_binary``)."""
+    found = shutil.which("agy")
+    if found:
+        return found
+    fallback = os.path.expanduser("~/.local/bin/agy")
+    return fallback if os.access(fallback, os.X_OK) else None
+
+
+def _default_agy_spawn(job: Callable[[], None]) -> None:
+    threading.Thread(target=job, name="agy-model-catalog-refresh", daemon=True).start()
+
+
+class AntigravityModelCatalog:
+    """Every model the operator's `agy models` subcommand lists.
+
+    ``id<TAB>Display Name`` per line; no ``--json``, no context windows
+    (so the antigravity chip keeps ``limit=None`` — a window is never
+    guessed). Read-only subprocess with a timeout, cached for ``ttl_s``;
+    any failure is an empty list with a ``reason`` — never a guess,
+    never a raise. The cache lock NEVER spans the subprocess (POST-09
+    R2): one CLI run at a time, everyone else waits lock-free; the
+    hot-poll path (:meth:`cached_name_for`) is stale-while-revalidate —
+    a fresh or stale cache answers instantly, a stale or cold one
+    schedules exactly one background refresh, and a cold cache answers
+    ``None`` on the spot.
+    """
+
+    def __init__(
+        self,
+        runner: Optional[_Runner] = None,
+        clock: Optional[Callable[[], float]] = None,
+        ttl_s: float = CATALOG_TTL_S,
+        failure_ttl_s: float = CATALOG_FAILURE_TTL_S,
+        timeout_s: float = CATALOG_CLI_TIMEOUT_S,
+        binary: Optional[str] = None,
+        spawn: Optional[Callable[[Callable[[], None]], None]] = None,
+    ):
+        self._run = runner or default_runner
+        self._clock = clock or time.monotonic
+        self._ttl_s = ttl_s
+        self._failure_ttl_s = failure_ttl_s
+        self._timeout_s = timeout_s
+        self._binary = binary
+        self._spawn = spawn or _default_agy_spawn
+        self._lock = threading.Lock()
+        self._cached: Optional[Tuple[float, dict]] = None
+        self._inflight = False
+
+    @staticmethod
+    def _copy(result: dict) -> dict:
+        return {
+            "models": [dict(entry) for entry in result["models"]],
+            "reason": result["reason"],
+        }
+
+    def _now(self) -> float:
+        try:
+            return self._clock()
+        except Exception:  # noqa: BLE001 — a broken clock only costs the cache
+            return 0.0
+
+    def list_models(self) -> dict:
+        """``{"models": [{"id", "name"}], "reason"}`` (``reason`` empty on
+        success). Never raises; may wait (lock-free) for an in-flight
+        refresh — the on-demand card fetch, not a hot poll."""
+        while True:
+            with self._lock:
+                cached = self._cached
+                if cached is not None and cached[0] > self._now():
+                    return self._copy(cached[1])
+                mine = not self._inflight
+                self._inflight = True
+            if mine:
+                return self._copy(self._refresh())
+            # Someone else is loading: wait WITHOUT the lock. Every
+            # refresh path finalizes (catch-all below), so this ends.
+            time.sleep(0.005)
+
+    def cached_name_for(self, model_id: str) -> Optional[str]:
+        """The stale-while-revalidate name lookup for hot polls (POST-09
+        R2). A fresh or stale cache answers instantly; a stale one also
+        schedules exactly one background refresh; a cold one answers
+        ``None`` on the spot (the caller falls back to the raw id).
+        Never blocks on the CLI, never raises, never duplicates a run."""
+        with self._lock:
+            cached = self._cached
+            cold = cached is None
+            stale = cached is not None and cached[0] <= self._now()
+            must_refresh = (cold or stale) and not self._inflight
+            if must_refresh:
+                self._inflight = True
+        if must_refresh:
+            self._spawn(self._refresh)
+        if cached is None:
+            return None
+        for entry in cached[1]["models"]:
+            if entry["id"] == model_id:
+                return entry["name"]
+        return None
+
+    def name_for(self, model_id: str) -> Optional[str]:
+        """Blocking name lookup (card-side uses): the catalog is
+        fetched/cached first, then the id resolved."""
+        for entry in self.list_models()["models"]:
+            if entry["id"] == model_id:
+                return entry["name"]
+        return None
+
+    def _refresh(self) -> dict:
+        """One CLI run OUTSIDE the lock, then the guarded cache write.
+        Every path finalizes, so waiters never wedge on ``_inflight``."""
+        try:
+            result = self._load()
+        except Exception:  # noqa: BLE001 — a refresh never raises
+            result = {"models": [], "reason": "error"}
+        with self._lock:
+            ttl = self._ttl_s if result["models"] else self._failure_ttl_s
+            self._cached = (self._now() + ttl, result)
+            self._inflight = False
+        return result
+
+    def _load(self) -> dict:
+        binary = self._binary or _agy_binary()
+        if not binary:
+            return {"models": [], "reason": "agy-not-found"}
+        try:
+            proc = self._run([binary, "models"], self._timeout_s)
+        except subprocess.TimeoutExpired:
+            return {"models": [], "reason": "timeout"}
+        except OSError:
+            return {"models": [], "reason": "unavailable"}
+        if proc.returncode != 0:
+            return {"models": [], "reason": "cli-failed"}
+        models: List[dict] = []
+        seen: Set[str] = set()
+        for raw in (proc.stdout or "").splitlines():
+            match = _AGY_MODEL_LINE.match(raw.strip())
+            if match is None or match.group(1) in seen:
+                continue
+            seen.add(match.group(1))
+            # C1: display names are free-form CLI output — masked before
+            # they ever reach a card or a refusal detail.
+            models.append(
+                {"id": match.group(1), "name": mask_text(match.group(2).strip())}
+            )
+        if not models:
+            return {"models": [], "reason": "empty"}
+        return {"models": models, "reason": ""}
+
+
+def antigravity_picker_rows(models: List[dict]) -> List[dict]:
+    """The rows agy's own ``/model`` picker paints, derived from the
+    catalog (POST-09 S2/D2).
+
+    The live capture (2026-11-26) pins the shape: a name's trailing
+    `` (Word)`` is a VARIANT axis (effort levels, orchestrator backends);
+    when several catalog entries share the base, the picker paints the
+    bare base as ONE row (choosing it takes that family's default
+    effort), while a lone entry keeps its full name — ``GPT-OSS 120B
+    (Medium)`` is painted exactly so. Each row carries ``ids`` — every
+    member id — so the pane's transcript id marks the current family.
+    Malformed entries are skipped; rows keep the CLI's order.
+    """
+    groups: Dict[str, List[dict]] = {}
+    order: List[str] = []
+    for entry in models:
+        if not isinstance(entry, dict):
+            continue
+        model_id = entry.get("id")
+        name = entry.get("name")
+        if not isinstance(model_id, str) or not model_id.strip():
+            continue
+        if not isinstance(name, str) or not name.strip():
+            continue
+        match = _AGY_NAME_VARIANT.match(name.strip())
+        base = match.group(1) if match else name.strip()
+        if base not in groups:
+            groups[base] = []
+            order.append(base)
+        groups[base].append({"id": model_id, "name": name.strip()})
+    rows: List[dict] = []
+    for base in order:
+        members = groups[base]
+        row_name = base if len(members) > 1 else members[0]["name"]
+        rows.append(
+            {
+                "id": members[0]["id"],
+                "name": row_name,
+                "ids": [member["id"] for member in members],
+            }
+        )
+    return rows
