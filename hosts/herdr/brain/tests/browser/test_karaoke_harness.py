@@ -118,9 +118,13 @@ EXPECTED_DIGESTS = {
     # Re-pinned for POST-07 (the compact cockpit top zone): the tabs row
     # + reply composer stay stacked under the header (operator rejected
     # the floor dock) with compact rows, real tab ellipsis, a capped
-    # model tag on phones and a desktop 760px card. CSS-only: app.js and
-    # herd-group.js untouched.
-    "/": "163dc282d077ad6569bdb4d89b273b17f797650a587c0a7591ed1323da9f46fb",
+    # model tag on phones and a desktop 760px card.
+    # Re-pinned for POST-08 (the Cuotas de IA / Carga del host cards in
+    # Ajustes ⚙): #quotas-box / #load-box containers + status-card CSS
+    # (index.html), createStatusCards (settings.js), openSettings
+    # on-demand fetch + I18N repaint (app.js) and quotas.*/load.* keys
+    # (both i18n).
+    "/": "ea1261ac5cb7e8038fca2b86939456a8b9b4bbab90a9d8093a8578fab2b2fe50",
     # send-track.js re-pinned for the correction batch (f7g): the
     # per-receipt seq guard (a lower seq is a stale delivery, ignored),
     # a start for an already-known receipt never regresses it, and a
@@ -162,7 +166,7 @@ EXPECTED_DIGESTS = {
     # Parity-w2 S8: history search and the adaptive state poll.
     # app.js re-pinned for W3-P2 (Ficheros tab & workspace explorer) and
     # W3-P1 (streaming_ask, speculative /next polling, early audio mic discipline).
-    "/app.js": "d341ae095be645cfbca486cadb062befd536695a67dd9500e8225c9ca7625ebb",
+    "/app.js": "9c29927d6ba2ec2c098497e404d600fde714d69df91641f14816a163f84cf2c9",
     "/history.js": "fa3526827b3e791bdc8f5950e398f3e318a2bff1c85ba684f0231d22d74e08d9",
     "/push.js": "28e9dd9c444f8f5948d7fc3186a461cf113c1d4de8266e9de769c0781502eaa7",
     "/receipts.js": "df01a313d8f6101bd9601d5a2a65eb420df7791c417a09e2d0d8c269a36742b0",
@@ -199,9 +203,9 @@ EXPECTED_DIGESTS = {
     # Re-pinned for W3-P2: the tabs.files and files.* keys (the
     # «Ficheros» workspace tab label, toolbar, empty/binary/truncated
     # notices and the diff viewer copy).
-    "/i18n/en.js": "1feddb690d6c051290652e1686bfa8d0913b46b23293d232c55d35d07b0c066c",
-    "/i18n/es.js": "179a1944e936c95c37fe1dd937184e87fb9097aa15e64f6935327348865052d3",
-    "/settings.js": "1c2cf3ed92bf959c19ecde0107618b8d1ff0690d2c6fa7c842a2fdc551e05f72",
+    "/i18n/en.js": "f75e57635b83e98138538d7b8d824a73672af30b1d25cebbd3838dfe3e20c985",
+    "/i18n/es.js": "eb601d6329110234f11f05b6e48f98c38fdea3e44ecb7ee0a6f6b6b179cb57b4",
+    "/settings.js": "335f4e2aa71cdf4fa05c66cfe9450394257a0453ad806ccf37b37bf536650702",
     "/updates.js": "7f87250cf6cd9c2b8944da632fe036d0c18a87a90f48f70b84e18bcd338cfa84",
     "/calls.js": "9b9ec591709d282c6e673770b2ffc1ed1562650104d8e8393126d186aa764165",
 }

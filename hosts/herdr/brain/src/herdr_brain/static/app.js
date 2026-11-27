@@ -813,8 +813,11 @@
     settingsSheet.removeAttribute("inert");
     /* The Avisos push card refreshes here, not at boot (S5): the card
      * answers to the operator looking at it, and a closed sheet costs
-     * no push traffic. */
+     * no push traffic. The POST-08 status cards ride the same seam:
+     * GET /quotas + GET /load fire only on open (readFetch), never at
+     * boot, never on a timer. */
     if (pushUI) pushUI.refresh();
+    if (statusCards) statusCards.refresh();
     try { history.pushState({ herdrSettings: true }, ""); } catch (err) { /* non-http */ }
     try { settingsCloseBtn.focus({ preventScroll: true }); } catch (err) { /* no focus API */ }
   }
@@ -11075,6 +11078,9 @@
       renderHerd(lastHerd, lastPeers);
       paintHistoryFindCount();
       refreshState();
+      /* Boot registration runs before statusCards exists; the guard
+       * covers the initial subscribe call, later switches repaint. */
+      if (statusCards) statusCards.render();
     });
   }
 
@@ -11109,6 +11115,20 @@
           body: JSON.stringify({ locale: code }),
         }).catch(function () { /* older brains ignore the field */ });
       },
+    });
+  }
+
+  /* Status cards (POST-08): Cuotas de IA + Carga del host, built by
+   * settings.js's createStatusCards. The cards fetch through readFetch
+   * ONLY when the sheet opens (openSettings, the pushUI.refresh()
+   * seam) — never at boot; a locale change repaints the cached
+   * payloads without refetching. */
+  var statusCards = null;
+  if (window.BrainSettings && BrainSettings.createStatusCards) {
+    statusCards = BrainSettings.createStatusCards({
+      doc: document,
+      request: function (url, options) { return readFetch(url, options); },
+      t: t,
     });
   }
 

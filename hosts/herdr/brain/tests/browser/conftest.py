@@ -332,6 +332,21 @@ class KaraokeHarness:
         # VAPID keys) — the card renders its operator hint and nothing
         # subscribes.
         self.respond("/push/key", {"enabled": False, "public_key": None})
+        # POST-08 status cards: the on-demand /quotas + /load fetches
+        # the Cuotas/Carga cards run when the Ajustes sheet OPENS
+        # (never at boot). Defaults keep the cards honest-but-empty —
+        # the exact fail-soft payloads the server ships on a bare
+        # install — so suites that open Ajustes never hit blocked
+        # traffic.
+        self.respond("/quotas", {
+            "available": False, "reason": "ai-quotas-not-found",
+            "stale": False, "fetched_at": None, "providers": [],
+        })
+        self.respond("/load", {
+            "host": "harness", "available": False,
+            "reason": "load metrics read Linux /proc (unavailable on darwin)",
+            "alerts": {"configured": 0, "active": 0},
+        })
         # S4 update notice: the boot /build poll the updater runs. The
         # 404 default stands the poller down (an older brain predates
         # the endpoint) — exactly the graceful fallback the page ships.

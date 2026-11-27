@@ -214,8 +214,304 @@
     };
   }
 
+  /* ---- status cards (POST-08): Cuotas de IA + Carga del host ----
+   *
+   * Two honest, read-only cards inside the Ajustes sheet, rendered by
+   * createStatusCards (same seams-injected shape as push.js). app.js
+   * calls refresh() when the sheet OPENS — never at boot, never on a
+   * timer — through readFetch (device bearer + the 403 pairing
+   * recovery). Every server string lands in a text node (C1); numbers
+   * render only when finite. The resets stamp formats device-locally
+   * because the backend ships raw ISO (its format_reset is voice-tool
+   * only) — the "Thu 18:59" shape matches the spoken line. */
+
+  var RESET_DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+  function formatResetLocal(iso) {
+    if (typeof iso !== "string" || !iso) return null;
+    var moment = new Date(iso);
+    if (isNaN(moment.getTime())) return null;
+    var hh = String(moment.getHours()).padStart(2, "0");
+    var mm = String(moment.getMinutes()).padStart(2, "0");
+    return RESET_DAYS[moment.getDay()] + " " + hh + ":" + mm;
+  }
+
+  function formatBps(bps) {
+    if (typeof bps !== "number" || !isFinite(bps) || bps < 0) return null;
+    if (bps < 1024) return Math.round(bps) + " B/s";
+    var units = ["KB/s", "MB/s", "GB/s"];
+    var value = bps;
+    var at = -1;
+    while (value >= 1024 && at < units.length - 1) { value /= 1024; at++; }
+    return value.toFixed(1) + " " + units[at];
+  }
+
+  function clampPercent(value) {
+    if (typeof value !== "number" || !isFinite(value)) return null;
+    if (value < 0) return 0;
+    if (value > 100) return 100;
+    return value;
+  }
+
+  function createStatusCards(deps) {
+    deps = deps || {};
+    var request = deps.request || function () {
+      return Promise.reject(new Error("no transport"));
+    };
+    var doc = deps.doc || (typeof document !== "undefined" ? document : null);
+    var translate = deps.t || null;
+
+    function tr(key, fallback) {
+      if (!translate) return fallback;
+      var value = translate(key);
+      return value && value !== key ? value : fallback;
+    }
+
+    var busy = false;
+    var cards = {
+      quotas: { payload: null, failed: false },
+      load: { payload: null, failed: false },
+    };
+
+    function el(tag, className, text) {
+      var node = doc.createElement(tag);
+      if (className) node.setAttribute("class", className);
+      if (text !== undefined && text !== null) node.textContent = text;
+      return node;
+    }
+
+    function clear(node) {
+      while (node.firstChild) node.removeChild(node.firstChild);
+    }
+
+    /* One meta fragment per trusted shape; everything else stays out. */
+    function quotaMeta(record) {
+      var parts = [];
+      var pct = clampPercent(record.used_percent);
+      if (pct !== null) parts.push(Math.round(pct) + "%");
+      if (typeof record.label === "string" && record.label) parts.push(record.label);
+      if (typeof record.detail === "string" && record.detail) parts.push(record.detail);
+      var reset = formatResetLocal(record.resets_at);
+      if (reset) parts.push(tr("quotas.resets", "Renueva {when}").replace("{when}", reset));
+      if (typeof record.cost_today_usd === "number" && isFinite(record.cost_today_usd)) {
+        parts.push(tr("quotas.cost_today", "{amount} hoy")
+          .replace("{amount}", "$" + record.cost_today_usd.toFixed(2)));
+      }
+      if (typeof record.cost_month_to_date_usd === "number" && isFinite(record.cost_month_to_date_usd)) {
+        parts.push(tr("quotas.cost_month", "{amount} mes")
+          .replace("{amount}", "$" + record.cost_month_to_date_usd.toFixed(2)));
+      }
+      return parts.join(" · ");
+    }
+
+    function quotaRecord(record) {
+      var name = (typeof record.display_name === "string" && record.display_name) ||
+        (typeof record.provider === "string" && record.provider) || null;
+      if (!name) return null;
+      var state = typeof record.state === "string" && record.state ? record.state : "unknown";
+      var row = el("div", "quota-row");
+      var head = el("div", "quota-head");
+      head.appendChild(el("div", "quota-name", name));
+      head.appendChild(el("div", "quota-state " + state, tr("quotas.state_" + state, state)));
+      row.appendChild(head);
+      var pct = clampPercent(record.used_percent);
+      if (pct !== null) {
+        var fill = el("div", "quota-bar-fill " + state);
+        fill.style.width = pct + "%";
+        var bar = el("div", "quota-bar");
+        bar.appendChild(fill);
+        row.appendChild(bar);
+      }
+      row.appendChild(el("div", "quota-meta", quotaMeta(record)));
+      return row;
+    }
+
+    function renderQuotas() {
+      var root = doc.getElementById("quotas-box");
+      if (!root) return;
+      clear(root);
+      root.appendChild(titleRow("quotas.title", "Cuotas de IA",
+        "quotas.refresh_title", "Actualizar cuotas",
+        function () { return refreshCard("quotas"); }));
+      var card = cards.quotas;
+      if (card.failed && !card.payload) {
+        root.appendChild(el("div", "push-status",
+          tr("quotas.fail", "No se pudieron cargar las cuotas — sin conexión")));
+        return;
+      }
+      if (!card.payload) {
+        root.appendChild(el("div", "push-status", tr("common.loading", "Cargando…")));
+        return;
+      }
+      var payload = card.payload;
+      var providers = Array.isArray(payload.providers) ? payload.providers : [];
+      if (!payload.available || providers.length === 0) {
+        root.appendChild(el("div", "push-status",
+          tr("quotas.unavailable", "Sin datos de cuotas ahora mismo")));
+        if (typeof payload.reason === "string" && payload.reason) {
+          root.appendChild(el("div", "quota-reason", payload.reason));
+        }
+        return;
+      }
+      if (payload.stale) {
+        root.appendChild(el("div", "quota-stale",
+          tr("quotas.stale", "Datos en caché — pueden estar desactualizados")));
+      }
+      for (var i = 0; i < providers.length; i++) {
+        var row = providers[i] && typeof providers[i] === "object" ? quotaRecord(providers[i]) : null;
+        if (row) root.appendChild(row);
+      }
+    }
+
+    function metricRow(labelKey, labelFallback, percent) {
+      var row = el("div", "load-row");
+      row.appendChild(el("div", "load-label", tr(labelKey, labelFallback)));
+      var fill = el("div", "quota-bar-fill");
+      fill.style.width = percent + "%";
+      var bar = el("div", "quota-bar");
+      bar.appendChild(fill);
+      row.appendChild(bar);
+      row.appendChild(el("div", "load-value", Math.round(percent) + "%"));
+      return row;
+    }
+
+    function renderLoad() {
+      var root = doc.getElementById("load-box");
+      if (!root) return;
+      clear(root);
+      root.appendChild(titleRow("load.title", "Carga del host",
+        "load.refresh_title", "Actualizar carga",
+        function () { return refreshCard("load"); }));
+      var card = cards.load;
+      if (card.failed && !card.payload) {
+        root.appendChild(el("div", "push-status",
+          tr("load.fail", "No se pudo cargar la carga del host — sin conexión")));
+        return;
+      }
+      if (!card.payload) {
+        root.appendChild(el("div", "push-status", tr("common.loading", "Cargando…")));
+        return;
+      }
+      var payload = card.payload;
+      if (!payload.available) {
+        root.appendChild(el("div", "push-status",
+          tr("load.unavailable", "Carga del host no disponible en este equipo")));
+        if (typeof payload.reason === "string" && payload.reason) {
+          root.appendChild(el("div", "quota-reason", payload.reason));
+        }
+        return;
+      }
+      var alerts = payload.alerts;
+      if (typeof payload.host === "string" && payload.host) {
+        root.appendChild(el("div", "push-status", payload.host));
+      }
+      if (alerts && typeof alerts.configured === "number" && alerts.configured > 0) {
+        root.appendChild(el("div", "load-alerts",
+          tr("load.alerts", "⚠ {active}/{configured} alertas activas")
+            .replace("{active}", String(typeof alerts.active === "number" ? alerts.active : 0))
+            .replace("{configured}", String(alerts.configured))));
+      }
+      if (typeof payload.cpu_percent !== "number" || !isFinite(payload.cpu_percent)) {
+        root.appendChild(el("div", "load-waiting",
+          tr("load.waiting", "Esperando la primera muestra del monitor…")));
+        return;
+      }
+      root.appendChild(metricRow("load.cpu", "CPU", clampPercent(payload.cpu_percent)));
+      var ram = clampPercent(payload.ram_percent);
+      if (ram !== null) root.appendChild(metricRow("load.ram", "RAM", ram));
+      var disk = clampPercent(payload.disk_percent);
+      if (disk !== null) root.appendChild(metricRow("load.disk", "Disco", disk));
+      var rx = formatBps(payload.net_rx_bps);
+      var tx = formatBps(payload.net_tx_bps);
+      if (rx !== null && tx !== null) {
+        root.appendChild(el("div", "load-net", "↓ " + rx + " · ↑ " + tx));
+      }
+    }
+
+    function titleRow(titleKey, titleFallback, refreshTitleKey, refreshTitleFallback, onRefresh) {
+      var row = el("div", "cards-title");
+      row.appendChild(el("div", "push-title", tr(titleKey, titleFallback)));
+      var button = el("button", "cards-refresh", "↻");
+      button.setAttribute("type", "button");
+      button.setAttribute("title", tr(refreshTitleKey, refreshTitleFallback));
+      button.disabled = busy;
+      button.addEventListener("click", function () { onRefresh(); });
+      row.appendChild(button);
+      return row;
+    }
+
+    function fetchJson(path) {
+      return Promise.resolve(request(path, { cache: "no-store" })).then(
+        function (resp) {
+          if (!resp || !resp.ok) return null;
+          return resp.json().then(function (body) {
+            return body && typeof body === "object" ? body : null;
+          }, function () { return null; });
+        },
+        function () { return null; }
+      );
+    }
+
+    function render() {
+      renderQuotas();
+      renderLoad();
+    }
+
+    /* One card's ↻ refetches ITS endpoint only (approved default: the
+     * cards refresh independently); the shared busy guard keeps the
+     * wire free of overlapping fetches. */
+    function refreshCard(which) {
+      if (busy) return Promise.resolve(null);
+      busy = true;
+      render();  /* paints Cargando… and disables the ↻ buttons */
+      return fetchJson(which === "quotas" ? "/quotas" : "/load").then(function (payload) {
+        var card = which === "quotas" ? cards.quotas : cards.load;
+        card.failed = payload === null;
+        if (payload !== null) card.payload = payload;
+        busy = false;
+        render();
+        return state();
+      });
+    }
+
+    function refresh() {
+      if (busy) return Promise.resolve(null);
+      busy = true;
+      render();  /* paints Cargando… and disables the ↻ buttons */
+      return Promise.all([fetchJson("/quotas"), fetchJson("/load")]).then(function (results) {
+        for (var i = 0; i < 2; i++) {
+          var card = i === 0 ? cards.quotas : cards.load;
+          var payload = results[i];
+          card.failed = payload === null;
+          if (payload !== null) card.payload = payload;
+        }
+        busy = false;
+        render();
+        return state();
+      });
+    }
+
+    function state() {
+      return {
+        busy: busy,
+        quotas: { payload: cards.quotas.payload, failed: cards.quotas.failed },
+        load: { payload: cards.load.payload, failed: cards.load.failed },
+      };
+    }
+
+    return {
+      refresh: refresh,
+      render: render,
+      state: state,
+    };
+  }
+
   var api = {
     createSettings: createSettings,
+    createStatusCards: createStatusCards,
+    formatResetLocal: formatResetLocal,
+    formatBps: formatBps,
+    clampPercent: clampPercent,
     nextThemeMode: nextThemeMode,
     resolveThemeMode: resolveThemeMode,
     resolvedTheme: resolvedTheme,
